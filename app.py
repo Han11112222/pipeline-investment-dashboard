@@ -134,7 +134,6 @@ with st.sidebar:
     
     st.divider()
     st.subheader("⚙️ 분석 기준")
-    # [요청 반영] 소수점 2자리, 0.01 단위 조정
     target_irr_percent = st.number_input("목표 IRR (%)", value=6.15, format="%.2f", step=0.01)
     tax_rate_percent = st.number_input("세율 (%)", value=20.9, format="%.1f", step=0.1)
     period_input = st.number_input("상각 기간 (년)", value=30, step=1)
@@ -159,7 +158,7 @@ st.title("💰 도시가스 배관투자 경제성 분석기")
 st.markdown("💡 **엑셀 기준(Year 0 투자 → Year 1~30 회수) 단순 연금 모델 적용**")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("목표 IRR", f"{target_irr_percent:.2f}%") # 2자리 표시
+c1.metric("목표 IRR", f"{target_irr_percent:.2f}%")
 c2.metric("적용 세율", f"{tax_rate_percent}%")
 c3.metric("유지비", f"{cost_maint_m_input:,}원")
 c4.metric("적용 마진", f"{margin_override_input:.4f}" if margin_override_input > 0 else "자동")
@@ -228,14 +227,13 @@ if df is not None:
             writer.sheets['Sheet1'].set_column('A:Z', 18)
         st.download_button("📥 엑셀 다운로드", output.getvalue(), "분석결과.xlsx", "primary")
 
-        # ------------------------------------------------------------------
-        # [NEW] 📉 연도별 경제성 분석 리포트 (맨 하단 배치)
-        # ------------------------------------------------------------------
+        # ==================================================================
+        # 📉 연도별 경제성 분석 리포트 (그래프 섹션)
+        # ==================================================================
         st.divider()
         st.subheader("📉 연도별 경제성 분석 리포트 (2020~2024)")
-        st.markdown(f"**목표 IRR {target_irr_percent:.2f}%**를 달성하기 위해 필요한 최소 판매량 추이입니다.")
+        st.markdown(f"**목표 IRR {target_irr_percent:.2f}%**를 달성하기 위해 필요한 최소 판매량 분석입니다.")
 
-        # 1. 연도 추출
         col_id = find_col(result_df, ["공사관리번호", "관리번호"])
         if col_id:
             chart_df = result_df.copy()
@@ -245,50 +243,87 @@ if df is not None:
             chart_df = chart_df[(chart_df['년도'] >= 2020) & (chart_df['년도'] <= 2024)]
             
             if not chart_df.empty:
-                tab1, tab2 = st.tabs(["📊 전체 추이 (막대)", "📈 용도별 추이 (선형)"])
+                tab1, tab2 = st.tabs(["📊 전체 추이 (막대)", "📈 용도별 상세 (선형)"])
                 
                 # Tab 1: 전체 (막대 그래프)
                 with tab1:
                     total_by_year = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
                     st.markdown("##### 📌 연도별 필요 최소 판매량 총합")
+                    
                     st.bar_chart(total_by_year, color="#FF6C6C")
+                    
+                    # 수치 테이블
+                    display_df = pd.DataFrame(total_by_year).reset_index()
+                    display_df.columns = ['Year', 'Total Volume (MJ)']
+                    st.dataframe(display_df.style.format({"Total Volume (MJ)": "{:,.0f}"}), hide_index=True)
                 
-                # Tab 2: 용도별 (꺾은선 그래프 - 선택형)
+                # Tab 2: 용도별 (선택형 꺾은선)
                 with tab2:
                     col_use = find_col(chart_df, ["용도", "구분"])
                     if col_use:
-                        # 용도 리스트 추출
                         usage_list = sorted(chart_df[col_use].unique().tolist())
+                        # [요청 반영] '전체 합계' 옵션 추가
+                        usage_list.insert(0, "전체 합계 (Total)")
                         
-                        # [요청 반영] 용도 선택 드롭다운
                         selected_usage = st.selectbox("분석할 용도를 선택하세요:", usage_list)
                         
-                        # 선택된 용도 필터링
-                        filtered_df = chart_df[chart_df[col_use] == selected_usage]
-                        usage_by_year = filtered_df.groupby('년도')['최소경제성만족판매량'].sum()
-                        
-                        # 데이터가 없는 연도도 0으로 채우기 위해 인덱스 재설정
                         full_idx = range(2020, 2025)
+                        
+                        if selected_usage == "전체 합계 (Total)":
+                            # 전체 데이터 사용
+                            usage_by_year = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
+                            chart_color = "#FF4B4B" # 빨간색 (전체)
+                        else:
+                            # 특정 용도 필터링
+                            filtered_df = chart_df[chart_df[col_use] == selected_usage]
+                            usage_by_year = filtered_df.groupby('년도')['최소경제성만족판매량'].sum()
+                            chart_color = "#FFA500" # 주황색 (개별)
+                        
+                        # 빈 연도 0 처리
                         usage_by_year = usage_by_year.reindex(full_idx, fill_value=0)
                         
-                        st.markdown(f"##### 📈 [{selected_usage}] 필요 판매량 추이")
+                        st.markdown(f"##### 📈 [{selected_usage}] 판매량 추세선")
                         
-                        # [요청 반영] 꺾은선 그래프 (Line Chart)
-                        st.line_chart(usage_by_year, color="#FFA500") # 주황색 라인
+                        st.line_chart(usage_by_year, color=chart_color)
                         
-                        # 수치 테이블 함께 표시
                         with st.expander("데이터 테이블 보기"):
                             display_df = pd.DataFrame(usage_by_year).reset_index()
                             display_df.columns = ['Year', 'Minimum Volume (MJ)']
                             st.dataframe(display_df.style.format({"Minimum Volume (MJ)": "{:,.0f}"}), hide_index=True)
-                            
                     else:
-                        st.warning("용도 컬럼을 찾을 수 없습니다.")
-            else:
-                st.info("⚠️ 2020~2024년 데이터가 없습니다.")
+                        st.warning("용도 컬럼이 없습니다.")
 
         # ==================================================================
-        # 상세 산출 근거 (맨 아래 유지)
+        # [NEW] 📈 누적 판매량 그래프 (Cumulative) - 맨 하단 추가
+        # ==================================================================
+        if 'chart_df' in locals() and not chart_df.empty:
+            st.divider()
+            st.subheader("📚 연도별 누적 최소 판매량 (Cumulative)")
+            st.markdown("**(2020년부터 해당 연도까지의 누적 합계)** - 장기적인 물량 확보 목표를 보여줍니다.")
+            
+            # 1. 연도별 합계 계산
+            annual_sum = chart_df.groupby('년도')['최소경제성만족판매량'].sum().sort_index()
+            # 0으로 빈 연도 채우기 (2020~2024)
+            full_idx = range(2020, 2025)
+            annual_sum = annual_sum.reindex(full_idx, fill_value=0)
+            
+            # 2. 누적 합계 계산 (cumsum)
+            cumulative_sum = annual_sum.cumsum()
+            
+            # 3. 그래프 표시 (영역 차트 or 막대 차트)
+            # 누적은 쌓이는 느낌이므로 Area Chart 또는 Bar Chart가 좋습니다.
+            
+            st.bar_chart(cumulative_sum, color="#4CAF50") # 초록색 (누적 성장 느낌)
+            
+            # 테이블 표시
+            cum_df = pd.DataFrame({
+                "연도": cumulative_sum.index,
+                "누적 판매량 (MJ)": cumulative_sum.values
+            })
+            st.dataframe(cum_df.style.format({"누적 판매량 (MJ)": "{:,.0f}"}), hide_index=True, use_container_width=True)
+
+        # ==================================================================
+        # 기존 상세 산출 근거 (맨 아래 유지)
         # ==================================================================
         st.divider()
         st.subheader("🧮 개별 프로젝트 상세")
@@ -298,7 +333,6 @@ if df is not None:
             selected = st.selectbox("프로젝트 선택:", result_df[name_col].unique())
             row = result_df[result_df[name_col] == selected].iloc[0]
             
-            # 데이터 추출
             col_inv = find_col(result_df, ["배관투자"])
             col_cont = find_col(result_df, ["분담금"])
             col_vol = find_col(result_df, ["판매량계", "연간판매량"])
