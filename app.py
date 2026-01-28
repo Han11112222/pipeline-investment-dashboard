@@ -184,7 +184,7 @@ if df is not None:
     if msg:
         st.error(msg)
     else:
-        # 1. 결과표 출력
+        # 1. 결과표
         st.divider()
         st.subheader("📊 분석 결과")
         
@@ -228,9 +228,7 @@ if df is not None:
             writer.sheets['Sheet1'].set_column('A:Z', 18)
         st.download_button("📥 엑셀 다운로드", output.getvalue(), "분석결과.xlsx", "primary")
 
-        # ==================================================================
-        # 2. [위치 변경] 개별 프로젝트 상세 (여기 먼저 보여줌)
-        # ==================================================================
+        # 2. 개별 프로젝트 산출 근거 (위치 이동됨)
         st.divider()
         st.subheader("🧮 개별 프로젝트 산출 근거")
         
@@ -239,6 +237,7 @@ if df is not None:
             selected = st.selectbox("프로젝트 선택:", result_df[name_col].unique())
             row = result_df[result_df[name_col] == selected].iloc[0]
             
+            # 데이터 추출 및 재계산 로직 (생략 없이 유지)
             col_inv = find_col(result_df, ["배관투자"])
             col_cont = find_col(result_df, ["분담금"])
             col_vol = find_col(result_df, ["판매량계", "연간판매량"])
@@ -296,17 +295,14 @@ if df is not None:
                 verify_npv = (verify_ocf * pvifa) - net_inv
                 
                 st.write(f"**[최종 결과]** 목표 달성 최소 판매량: **{final_vol:,.1f} MJ**")
-                
                 if abs(verify_npv) < 1000:
                     st.success("✅ NPV ≈ 0 검증 완료")
                 else:
                     st.warning("⚠️ 미세 오차 발생")
 
         # ==================================================================
-        # 3. [위치 변경] 그래프 섹션 (맨 하단으로 이동)
+        # 3. 그래프 섹션 (맨 하단)
         # ==================================================================
-        
-        # 공통 데이터 준비
         col_id = find_col(result_df, ["공사관리번호", "관리번호"])
         chart_data_ready = False
         chart_df = pd.DataFrame()
@@ -337,6 +333,10 @@ if df is not None:
                 display_df = pd.DataFrame(total_by_year).reset_index()
                 display_df.columns = ['Year', 'Total Volume (MJ)']
                 st.dataframe(display_df.style.format({"Total Volume (MJ)": "{:,.0f}"}), hide_index=True)
+                
+                # [추가] 다운로드 버튼 (CSV)
+                csv = display_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 데이터 다운로드 (CSV)", csv, "annual_total.csv", "text/csv")
             
             # Tab 2: 용도별
             with tab2:
@@ -363,13 +363,16 @@ if df is not None:
                     display_df = pd.DataFrame(usage_by_year).reset_index()
                     display_df.columns = ['Year', 'Volume (MJ)']
                     st.dataframe(display_df.style.format({"Volume (MJ)": "{:,.0f}"}), hide_index=True)
+                    
+                    # [추가] 다운로드 버튼 (CSV)
+                    csv_usg = display_df.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button(f"📥 {selected_usage} 데이터 다운로드 (CSV)", csv_usg, f"annual_{selected_usage}.csv", "text/csv")
                 else:
                     st.warning("용도 컬럼 없음")
 
-            # 3-2. 누적 분석 리포트 (기능 업그레이드)
+            # 3-2. 누적 분석 리포트
             st.divider()
             st.subheader("2. 연도별 누적 최소 판매량 (Cumulative)")
-            st.markdown("**(2020년부터 누적된 목표 판매량 총합)**")
             
             tab_cum1, tab_cum2 = st.tabs(["📊 전체 누적 (막대)", "📈 용도별 누적 (선형)"])
             
@@ -380,15 +383,19 @@ if df is not None:
                 annual_sum = annual_sum.reindex(full_idx, fill_value=0)
                 cumulative_sum = annual_sum.cumsum()
                 
-                st.bar_chart(cumulative_sum, color="#4CAF50") # 초록색
+                st.bar_chart(cumulative_sum, color="#4CAF50")
                 
                 cum_df = pd.DataFrame({
                     "연도": cumulative_sum.index,
                     "누적 판매량 (MJ)": cumulative_sum.values
                 })
                 st.dataframe(cum_df.style.format({"누적 판매량 (MJ)": "{:,.0f}"}), hide_index=True)
+                
+                # [추가] 다운로드 버튼
+                csv_cum = cum_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 누적 데이터 다운로드 (CSV)", csv_cum, "cumulative_total.csv", "text/csv")
 
-            # Tab 2: 용도별 누적 (신규 추가)
+            # Tab 2: 용도별 누적
             with tab_cum2:
                 col_use = find_col(chart_df, ["용도", "구분"])
                 if col_use:
@@ -399,11 +406,11 @@ if df is not None:
                     
                     if selected_usage_cum == "전체 합계 (Total)":
                         annual_data = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
-                        chart_color_cum = "#2E7D32" # 진한 초록
+                        chart_color_cum = "#2E7D32" 
                     else:
                         filtered_df_cum = chart_df[chart_df[col_use] == selected_usage_cum]
                         annual_data = filtered_df_cum.groupby('년도')['최소경제성만족판매량'].sum()
-                        chart_color_cum = "#009688" # 청록색
+                        chart_color_cum = "#009688"
                     
                     annual_data = annual_data.reindex(full_idx, fill_value=0)
                     cumulative_data = annual_data.cumsum()
@@ -413,6 +420,10 @@ if df is not None:
                     cum_disp_df = pd.DataFrame(cumulative_data).reset_index()
                     cum_disp_df.columns = ['Year', 'Cumulative Volume (MJ)']
                     st.dataframe(cum_disp_df.style.format({"Cumulative Volume (MJ)": "{:,.0f}"}), hide_index=True)
+                    
+                    # [추가] 다운로드 버튼
+                    csv_cum_usg = cum_disp_df.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button(f"📥 {selected_usage_cum} 누적 데이터 다운로드 (CSV)", csv_cum_usg, f"cumulative_{selected_usage_cum}.csv", "text/csv")
 
         elif not chart_data_ready:
             st.divider()
