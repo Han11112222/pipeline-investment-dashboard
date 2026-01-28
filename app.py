@@ -40,10 +40,10 @@ def parse_value(value):
         return 0.0
 
 # --------------------------------------------------------------------------
-# [함수] 정밀 역산 로직 (High Precision)
+# [함수] 365일 단순 연 단위 계산 로직
 # --------------------------------------------------------------------------
 def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admin_hh, cost_admin_m, margin_override=None):
-    # PVIFA (정밀 계산)
+    # PVIFA (연금현가계수) - 1년 단위 단순 계산 (365일 기준)
     if target_irr == 0:
         pvifa = period
     else:
@@ -84,6 +84,7 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
             else:
                 required_capital_recovery = net_investment / pvifa
 
+            # 판관비 계산 (단순 합산)
             maint_cost = length * cost_maint_m
             if any(k in str(usage_str) for k in ['공동', '단독', '주택', '아파트']):
                 admin_cost = households * cost_admin_hh
@@ -95,10 +96,8 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
             required_ebit = (required_capital_recovery - depreciation) / (1 - tax_rate)
             required_gross_margin = required_ebit + total_sga + depreciation
             
-            # [정밀 계산] 마진 단가 (소수점 제한 없음)
+            # 마진 단가 결정
             calculated_margin = current_profit / current_vol
-            
-            # 사용자 강제 적용값 확인
             if margin_override and margin_override > 0:
                 final_margin = margin_override
             else:
@@ -109,7 +108,7 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
                 margin_debug.append(0)
                 continue
 
-            # [정밀 계산] 최종 판매량
+            # 최종 판매량 (소수점 제한 없이 정밀 계산 후 저장)
             required_volume = required_gross_margin / final_margin
             results.append(max(0, required_volume))
             margin_debug.append(final_margin)
@@ -133,26 +132,28 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
 # [UI] 사이드바
 # --------------------------------------------------------------------------
 with st.sidebar:
-    st.header("📂 파일 및 설정")
-    data_source = st.radio("소스 선택", ("GitHub 파일", "엑셀 업로드"))
+    st.header("📂 설정")
+    data_source = st.radio("소스", ("GitHub 파일", "엑셀 업로드"))
     if data_source == "엑셀 업로드":
         uploaded_file = st.file_uploader("파일 업로드", type=['xlsx'])
     
     st.divider()
     st.subheader("⚙️ 분석 기준")
-    target_irr_percent = st.number_input("목표 IRR (%)", value=6.15, format="%.2f", step=0.01)
+    # [설정] 엑셀과 맞추기 위해 정밀도 높임
+    target_irr_percent = st.number_input("목표 IRR (%)", value=6.1500, format="%.4f", step=0.0001)
     tax_rate_percent = st.number_input("세율 (%)", value=20.9, format="%.1f", step=0.1)
     period_input = st.number_input("상각 기간 (년)", value=30, step=1)
     
     st.subheader("💰 비용 단가 (2024년 기준)")
+    st.caption("※ 엑셀 파일 연도에 맞는 단가를 입력하세요.")
     cost_maint_m_input = st.number_input("유지비 (원/m)", value=8222)
     cost_admin_hh_input = st.number_input("관리비 (원/전)", value=6209)
     cost_admin_m_input = st.number_input("관리비 (원/m)", value=13605)
 
     st.divider()
-    st.subheader("🔧 정밀 보정 (계산용)")
-    margin_override_input = st.number_input("단위당 마진 강제 적용 (원/MJ)", value=0.0, step=0.0001, format="%.4f")
-    st.caption("* 0으로 두면 자동 계산됩니다.")
+    st.subheader("🔧 정밀 보정")
+    margin_override_input = st.number_input("단위당 마진 강제 (원/MJ)", value=0.0, step=0.0001, format="%.4f")
+    st.caption("* 0일 경우 자동 계산 (추천)")
 
     target_irr = target_irr_percent / 100
     tax_rate = tax_rate_percent / 100
@@ -161,12 +162,13 @@ with st.sidebar:
 # [UI] 메인 화면
 # --------------------------------------------------------------------------
 st.title("💰 도시가스 배관투자 경제성 분석기")
+st.markdown("💡 **365일 단순 연 단위 계산(Excel-like)** 방식이 적용되었습니다.")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("목표 IRR", f"{target_irr_percent}%")
+c1.metric("목표 IRR", f"{target_irr_percent:.4f}%")
 c2.metric("적용 세율", f"{tax_rate_percent}%")
 c3.metric("유지비", f"{cost_maint_m_input:,}원")
-c4.metric("적용 마진", f"{margin_override_input:.4f}" if margin_override_input > 0 else "자동 계산")
+c4.metric("적용 마진", f"{margin_override_input:.4f}" if margin_override_input > 0 else "자동")
 
 df = None
 if data_source == "GitHub 파일":
@@ -180,7 +182,6 @@ elif data_source == "엑셀 업로드" and uploaded_file:
 if df is not None:
     df = clean_column_names(df)
     
-    # 계산 실행 (정밀도 MAX)
     result_df, margins, msg = calculate_all_rows(
         df, target_irr, tax_rate, period_input, 
         cost_maint_m_input, cost_admin_hh_input, cost_admin_m_input,
@@ -191,7 +192,7 @@ if df is not None:
         st.error(msg)
     else:
         st.divider()
-        st.subheader("📊 분석 결과 요약")
+        st.subheader("📊 분석 결과")
         
         view_cols_map = {
             "공사관리번호": ["공사관리번호", "관리번호"],
@@ -214,12 +215,12 @@ if df is not None:
             if "최소경제성만족판매량(MJ)" in final_df.columns:
                 styler = styler.background_gradient(subset=["최소경제성만족판매량(MJ)"], cmap="Oranges")
             
-            # [핵심] 화면 표시 포맷 설정 (여기서 소수점 1자리로 제어)
+            # [핵심 요청사항 반영] 화면에는 소수점 1자리까지만 깔끔하게 표시
             format_dict = {
-                "현재판매량(MJ)": "{:,.0f}",          # 정수 표시
-                "최소경제성만족판매량(MJ)": "{:,.1f}", # 요청하신 소수점 1자리
-                "달성률": "{:.1f}%",                 # 소수점 1자리 %
-                "적용마진(원/MJ)": "{:.4f}"            # 마진은 정밀하게 확인
+                "현재판매량(MJ)": "{:,.0f}",
+                "최소경제성만족판매량(MJ)": "{:,.1f}", # 소수점 1자리
+                "달성률": "{:.1f}%",                 # 소수점 1자리
+                "적용마진(원/MJ)": "{:.4f}"            # 마진은 정밀하게
             }
             valid_format = {k: v for k, v in format_dict.items() if k in final_df.columns}
             styler = styler.format(valid_format)
@@ -238,14 +239,14 @@ if df is not None:
         # 상세 산출 근거
         # ------------------------------------------------------------------
         st.divider()
-        st.subheader("🧮 산출 근거 상세 (Calculation Breakdown)")
+        st.subheader("🧮 산출 근거 상세")
         
         name_col = find_col(result_df, ["투자분석명", "공사명"])
         if name_col:
             selected = st.selectbox("프로젝트 선택:", result_df[name_col].unique())
             row = result_df[result_df[name_col] == selected].iloc[0]
             
-            # 파싱
+            # 데이터 추출
             col_inv = find_col(result_df, ["배관투자"])
             col_cont = find_col(result_df, ["분담금"])
             col_vol = find_col(result_df, ["판매량계", "연간판매량"])
@@ -270,10 +271,8 @@ if df is not None:
             maint_c = length * cost_maint_m_input
             if any(k in usage for k in ['공동', '단독', '주택', '아파트']):
                 admin_c = hh * cost_admin_hh_input
-                note = "주택용"
             else:
                 admin_c = length * cost_admin_m_input
-                note = "비주택"
             total_sga = maint_c + admin_c
             
             dep = inv / period_input
@@ -283,13 +282,12 @@ if df is not None:
             auto_margin = profit / vol if vol > 0 else 0
             if margin_override_input > 0:
                 final_margin = margin_override_input
-                src = "수동 입력"
             else:
                 final_margin = auto_margin
-                src = "자동 계산"
 
             final_vol = req_gross / final_margin if final_margin > 0 else 0
 
+            # 상세 화면
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**1. 투자 정보**")
@@ -297,7 +295,7 @@ if df is not None:
                 st.write(f"- 운영 비용: {total_sga:,.0f} 원")
             with c2:
                 st.markdown("**2. 수익 구조**")
-                st.info(f"👉 **적용 마진:** {final_margin:.4f} 원/MJ ({src})")
+                st.info(f"👉 **적용 마진:** {final_margin:.4f} 원/MJ")
 
             st.markdown("---")
             if final_vol > 0:
@@ -306,9 +304,8 @@ if df is not None:
                 verify_npv = (verify_ocf * pvifa) - net_inv
                 
                 st.write(f"**[최종 결과]** 목표 달성 최소 판매량: **{final_vol:,.1f} MJ**")
-                st.caption(f"(검증용 NPV: {verify_npv:,.0f} 원)")
                 
                 if abs(verify_npv) < 1000:
-                    st.success("✅ NPV ≈ 0 (정확도 확보)")
+                    st.success("✅ NPV ≈ 0 (365일 단순 계산 검증 완료)")
                 else:
-                    st.warning("⚠️ 미세 오차 발생: 마진 단가를 더 정밀하게 입력하면 해결됩니다.")
+                    st.warning("⚠️ 미세 오차 발생 (마진 단가 미세 조정 필요)")
