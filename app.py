@@ -95,6 +95,7 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
             required_ebit = (required_capital_recovery - depreciation) / (1 - tax_rate)
             required_gross_margin = required_ebit + total_sga + depreciation
             
+            # [핵심] 단위당 마진 계산
             unit_margin = current_profit / current_vol
             if unit_margin <= 0:
                 results.append(0)
@@ -107,8 +108,6 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
             results.append(0)
     
     df['최소경제성만족판매량'] = results
-    
-    # 달성률 계산 (목표가 0이면 999.9% 처리)
     df['달성률'] = df.apply(
         lambda x: (x[col_vol] / x['최소경제성만족판매량'] * 100) if x['최소경제성만족판매량'] > 1 else (999.9 if x[col_vol] > 0 else 0), 
         axis=1
@@ -172,7 +171,6 @@ if df is not None:
         st.divider()
         st.subheader("📊 분석 결과 요약")
         
-        # 1. 화면 표시용 데이터프레임 만들기
         view_cols_map = {
             "공사관리번호": ["공사관리번호", "관리번호"],
             "투자분석명": ["투자분석명", "공사명"],
@@ -188,28 +186,22 @@ if df is not None:
             if found:
                 final_df[label] = result_df[found]
         
-        # 2. [핵심 수정] Pandas Styler로 색상과 포맷(콤마) 동시 적용
+        # 스타일링
         try:
             styler = final_df.style
-            
-            # (1) 색상 적용 (주황색 그라데이션)
             if "최소경제성만족판매량(MJ)" in final_df.columns:
                 styler = styler.background_gradient(subset=["최소경제성만족판매량(MJ)"], cmap="Oranges")
             
-            # (2) 콤마 및 소수점 포맷 적용 (여기서 강제함)
             format_dict = {
-                "현재판매량(MJ)": "{:,.0f}",          # 천단위 콤마, 소수점 없음
-                "최소경제성만족판매량(MJ)": "{:,.0f}", # 천단위 콤마, 소수점 없음
-                "달성률": "{:.1f}%"                  # 소수점 1자리 + %
+                "현재판매량(MJ)": "{:,.0f}",
+                "최소경제성만족판매량(MJ)": "{:,.0f}",
+                "달성률": "{:.1f}%"
             }
-            # 존재하는 컬럼에 대해서만 포맷 적용
             valid_format = {k: v for k, v in format_dict.items() if k in final_df.columns}
             styler = styler.format(valid_format)
 
             st.dataframe(styler, use_container_width=True, hide_index=True)
-
-        except Exception as e:
-            st.warning("⚠️ 스타일 적용 중 오류 발생 (기본 표로 표시합니다)")
+        except:
             st.dataframe(final_df, use_container_width=True)
 
         # 엑셀 다운로드
@@ -220,7 +212,7 @@ if df is not None:
         st.download_button("📥 엑셀 다운로드", output.getvalue(), "분석결과.xlsx", "primary")
 
         # ------------------------------------------------------------------
-        # 상세 산출 근거
+        # [업그레이드] 상세 산출 근거 (단가 산출식 명시)
         # ------------------------------------------------------------------
         st.divider()
         st.subheader("🧮 산출 근거 상세")
@@ -230,6 +222,7 @@ if df is not None:
             selected = st.selectbox("프로젝트 선택:", result_df[name_col].unique())
             row = result_df[result_df[name_col] == selected].iloc[0]
             
+            # 파싱
             col_inv = find_col(result_df, ["배관투자"])
             col_cont = find_col(result_df, ["분담금"])
             col_vol = find_col(result_df, ["판매량계", "연간판매량"])
@@ -246,6 +239,7 @@ if df is not None:
             hh = parse_value(row.get(col_hh))
             usage = str(row.get(col_use, ""))
 
+            # 계산 재연
             pvifa = (1 - (1 + target_irr) ** (-period_input)) / target_irr
             net_inv = inv - cont
             req_capital = max(0, net_inv / pvifa)
@@ -265,21 +259,25 @@ if df is not None:
             unit_margin = profit / vol if vol > 0 else 0
             final_vol = req_gross / unit_margin if unit_margin > 0 else 0
 
+            # 2단 표시
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**1. 투자 정보**")
                 st.write(f"- 순투자액: **{net_inv:,.0f}** 원")
                 st.write(f"- 시설: {length}m / {hh}세대 ({note})")
             with c2:
-                st.markdown("**2. 수익 구조**")
-                st.write(f"- 현재 판매량: **{vol:,.0f}** MJ")
-                st.write(f"- 단위 마진: **{unit_margin:.2f}** 원/MJ")
+                st.markdown("**2. 수익 구조 (단가 산출)**")
+                st.write(f"- 연간 판매수익(이익): **{profit:,.0f}** 원")
+                st.write(f"- 연간 판매량: **{vol:,.0f}** MJ")
+                # [여기가 핵심] 단가 계산식 보여주기
+                st.info(f"👉 **단위당 마진:** {profit:,.0f}원 ÷ {vol:,.0f}MJ = **{unit_margin:.2f} 원/MJ**")
 
-            st.info(f"""
-            **[최종 계산]**
-            1. 필요 자본회수액(OCF) = {req_capital:,.0f} 원
-            2. 연간 운영비(판관비) = {total_sga:,.0f} 원
-            3. 필요 마진총액 = {req_gross:,.0f} 원
+            st.markdown("---")
+            st.markdown("**[최종 역산 과정]**")
+            st.write(f"1. **자본회수 필요액(OCF)**: {req_capital:,.0f} 원")
+            st.write(f"2. **+ 운영비 & 세금효과 감안**: {req_gross:,.0f} 원 (필요 마진총액)")
             
-            👉 **최소경제성만족판매량** = {req_gross:,.0f} ÷ {unit_margin:.2f} = **{max(0, final_vol):,.0f} MJ**
+            st.success(f"""
+            👉 **최소경제성만족판매량** = 필요 마진총액 ÷ 단위당 마진  
+            = {req_gross:,.0f} ÷ {unit_margin:.2f} = **{max(0, final_vol):,.0f} MJ**
             """)
