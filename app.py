@@ -40,10 +40,9 @@ def parse_value(value):
         return 0.0
 
 # --------------------------------------------------------------------------
-# [함수] 엑셀형 단순 연금 계산 로직 (Standard Annuity)
+# [함수] 엑셀형 단순 연금 계산 로직
 # --------------------------------------------------------------------------
 def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admin_hh, cost_admin_m, margin_override=None):
-    # PVIFA (연금현가계수)
     if target_irr == 0:
         pvifa = period
     else:
@@ -78,14 +77,12 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
                 margin_debug.append(0)
                 continue
 
-            # 순투자액
             net_investment = investment - contribution
             if net_investment <= 0:
                 required_capital_recovery = 0
             else:
                 required_capital_recovery = net_investment / pvifa
 
-            # 판관비
             maint_cost = length * cost_maint_m
             if any(k in str(usage_str) for k in ['공동', '단독', '주택', '아파트']):
                 admin_cost = households * cost_admin_hh
@@ -93,12 +90,10 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
                 admin_cost = length * cost_admin_m
             total_sga = maint_cost + admin_cost
             
-            # 감가상각 & 세전이익 & 마진총액
             depreciation = investment / period
             required_ebit = (required_capital_recovery - depreciation) / (1 - tax_rate)
             required_gross_margin = required_ebit + total_sga + depreciation
             
-            # 마진 단가
             calculated_margin = current_profit / current_vol
             if margin_override and margin_override > 0:
                 final_margin = margin_override
@@ -139,14 +134,11 @@ with st.sidebar:
     
     st.divider()
     st.subheader("⚙️ 분석 기준")
-    
-    # [수정 완료] 0.01 단위로 변경 & 소수점 2자리 표시
-    target_irr_percent = st.number_input("목표 IRR (%)", value=6.15, format="%.2f", step=0.01)
-    
+    target_irr_percent = st.number_input("목표 IRR (%)", value=6.1500, format="%.4f", step=0.0001)
     tax_rate_percent = st.number_input("세율 (%)", value=20.9, format="%.1f", step=0.1)
     period_input = st.number_input("상각 기간 (년)", value=30, step=1)
     
-    st.subheader("💰 비용 단가 (입력값 확인)")
+    st.subheader("💰 비용 단가 (2024년 기준)")
     cost_maint_m_input = st.number_input("유지비 (원/m)", value=8222)
     cost_admin_hh_input = st.number_input("관리비 (원/전)", value=6209)
     cost_admin_m_input = st.number_input("관리비 (원/m)", value=13605)
@@ -163,11 +155,10 @@ with st.sidebar:
 # [UI] 메인 화면
 # --------------------------------------------------------------------------
 st.title("💰 도시가스 배관투자 경제성 분석기")
-st.markdown("💡 **엑셀 기준 (단순 연 단위, Simple Annuity) 적용**")
+st.markdown("💡 **엑셀 기준(Year 0 투자 → Year 1~30 회수) 단순 연금 모델 적용**")
 
 c1, c2, c3, c4 = st.columns(4)
-# [수정 완료] 상단 메트릭도 깔끔하게 2자리 표시
-c1.metric("목표 IRR", f"{target_irr_percent:.2f}%") 
+c1.metric("목표 IRR", f"{target_irr_percent:.4f}%")
 c2.metric("적용 세율", f"{tax_rate_percent}%")
 c3.metric("유지비", f"{cost_maint_m_input:,}원")
 c4.metric("적용 마진", f"{margin_override_input:.4f}" if margin_override_input > 0 else "자동")
@@ -217,12 +208,11 @@ if df is not None:
             if "최소경제성만족판매량(MJ)" in final_df.columns:
                 styler = styler.background_gradient(subset=["최소경제성만족판매량(MJ)"], cmap="Oranges")
             
-            # [유지] 결과값은 깔끔하게 소수점 1자리
             format_dict = {
                 "현재판매량(MJ)": "{:,.0f}",
-                "최소경제성만족판매량(MJ)": "{:,.1f}", 
-                "달성률": "{:.1f}%",                 
-                "적용마진(원/MJ)": "{:.4f}"            
+                "최소경제성만족판매량(MJ)": "{:,.1f}",
+                "달성률": "{:.1f}%",
+                "적용마진(원/MJ)": "{:.4f}"
             }
             valid_format = {k: v for k, v in format_dict.items() if k in final_df.columns}
             styler = styler.format(valid_format)
@@ -237,18 +227,78 @@ if df is not None:
             writer.sheets['Sheet1'].set_column('A:Z', 18)
         st.download_button("📥 엑셀 다운로드", output.getvalue(), "분석결과.xlsx", "primary")
 
-        # ------------------------------------------------------------------
-        # 상세 산출 근거 (엑셀 대조용)
-        # ------------------------------------------------------------------
+        # ==================================================================
+        # [NEW] 📉 연도별 경제성 분석 리포트 (그래프 섹션)
+        # ==================================================================
         st.divider()
-        st.subheader("🧮 산출 근거 상세")
+        st.subheader("📉 연도별 경제성 분석 리포트 (2020~2024)")
+        st.markdown(f"**목표 IRR {target_irr_percent}%**를 달성하기 위해 필요한 **최소 판매량 총합**입니다.")
+
+        # 1. 연도 추출 (공사관리번호 앞 4자리)
+        col_id = find_col(result_df, ["공사관리번호", "관리번호"])
+        
+        if col_id:
+            # 원본 데이터 손상 방지용 복사
+            chart_df = result_df.copy()
+            
+            # 연도 추출 (문자열 변환 -> 앞 4자리 -> 숫자 변환)
+            chart_df['년도'] = chart_df[col_id].astype(str).str[:4]
+            # 숫자가 아닌 데이터 제거 (안전장치)
+            chart_df = chart_df[chart_df['년도'].str.isnumeric()]
+            chart_df['년도'] = chart_df['년도'].astype(int)
+            
+            # 2020~2024 필터링
+            chart_df = chart_df[(chart_df['년도'] >= 2020) & (chart_df['년도'] <= 2024)]
+            
+            if not chart_df.empty:
+                # 탭 구성
+                tab1, tab2 = st.tabs(["📊 전체 판매량 추이", "🏗️ 용도별 상세 분석"])
+                
+                # Tab 1: 전체 그래프
+                with tab1:
+                    # 연도별 합계
+                    total_by_year = chart_df.groupby('년도')['최소경제성만족판매량'].sum().reset_index()
+                    total_by_year.columns = ['Year', 'Minimum Volume (MJ)']
+                    
+                    st.markdown("##### 📌 연도별 필요 최소 판매량 총합")
+                    st.bar_chart(total_by_year.set_index('Year'), color="#FF6C6C") # 붉은색 계열
+                    
+                    # 데이터 테이블 표시
+                    with st.expander("상세 데이터 보기"):
+                        st.dataframe(total_by_year.style.format({"Minimum Volume (MJ)": "{:,.0f}"}))
+
+                # Tab 2: 용도별 그래프
+                with tab2:
+                    col_use = find_col(chart_df, ["용도", "구분"])
+                    if col_use:
+                        # 연도/용도별 합계
+                        usage_by_year = chart_df.groupby(['년도', col_use])['최소경제성만족판매량'].sum().reset_index()
+                        
+                        # 피벗 (그래프용)
+                        pivot_df = usage_by_year.pivot(index='년도', columns=col_use, values='최소경제성만족판매량').fillna(0)
+                        
+                        st.markdown("##### 📌 용도별 필요 판매량 구성")
+                        st.bar_chart(pivot_df)
+                        
+                        st.info("💡 색상은 각 용도(공동주택, 산업용 등)를 나타냅니다.")
+                    else:
+                        st.warning("용도 컬럼을 찾을 수 없어 상세 그래프를 그릴 수 없습니다.")
+            else:
+                st.info("⚠️ 2020년~2024년에 해당하는 데이터가 없습니다.")
+        else:
+            st.warning("⚠️ '공사관리번호' 컬럼이 없어 연도를 추출할 수 없습니다.")
+
+        # ==================================================================
+        # 기존 상세 산출 근거 (맨 아래 유지)
+        # ==================================================================
+        st.divider()
+        st.subheader("🧮 개별 프로젝트 산출 근거")
         
         name_col = find_col(result_df, ["투자분석명", "공사명"])
         if name_col:
             selected = st.selectbox("프로젝트 선택:", result_df[name_col].unique())
             row = result_df[result_df[name_col] == selected].iloc[0]
             
-            # 데이터 추출
             col_inv = find_col(result_df, ["배관투자"])
             col_cont = find_col(result_df, ["분담금"])
             col_vol = find_col(result_df, ["판매량계", "연간판매량"])
@@ -265,7 +315,6 @@ if df is not None:
             hh = parse_value(row.get(col_hh))
             usage = str(row.get(col_use, ""))
 
-            # 재계산 (엑셀 로직)
             pvifa = (1 - (1 + target_irr) ** (-period_input)) / target_irr
             net_inv = inv - cont
             req_capital = max(0, net_inv / pvifa)
@@ -291,7 +340,6 @@ if df is not None:
 
             final_vol = req_gross / final_margin if final_margin > 0 else 0
 
-            # 2단 표시
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**1. 투자 정보**")
@@ -309,8 +357,7 @@ if df is not None:
                 
                 st.write(f"**[최종 결과]** 목표 달성 최소 판매량: **{final_vol:,.1f} MJ**")
                 
-                # NPV 검증
                 if abs(verify_npv) < 1000:
-                    st.success("✅ 엑셀식 NPV 검증 완료 (Year 0 지출, Year 1~30 균등 회수)")
+                    st.success("✅ NPV ≈ 0 검증 완료")
                 else:
-                    st.warning("⚠️ 미세 오차 발생 (비용 단가 또는 마진을 확인하세요)")
+                    st.warning("⚠️ 미세 오차 발생")
