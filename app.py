@@ -184,6 +184,7 @@ if df is not None:
     if msg:
         st.error(msg)
     else:
+        # 1. 결과표 출력
         st.divider()
         st.subheader("📊 분석 결과")
         
@@ -228,105 +229,10 @@ if df is not None:
         st.download_button("📥 엑셀 다운로드", output.getvalue(), "분석결과.xlsx", "primary")
 
         # ==================================================================
-        # 📉 연도별 경제성 분석 리포트 (그래프 섹션)
+        # 2. [위치 변경] 개별 프로젝트 상세 (여기 먼저 보여줌)
         # ==================================================================
         st.divider()
-        st.subheader("📉 연도별 경제성 분석 리포트 (2020~2024)")
-        st.markdown(f"**목표 IRR {target_irr_percent:.2f}%**를 달성하기 위해 필요한 최소 판매량 분석입니다.")
-
-        col_id = find_col(result_df, ["공사관리번호", "관리번호"])
-        if col_id:
-            chart_df = result_df.copy()
-            chart_df['년도'] = chart_df[col_id].astype(str).str[:4]
-            chart_df = chart_df[chart_df['년도'].str.isnumeric()]
-            chart_df['년도'] = chart_df['년도'].astype(int)
-            chart_df = chart_df[(chart_df['년도'] >= 2020) & (chart_df['년도'] <= 2024)]
-            
-            if not chart_df.empty:
-                tab1, tab2 = st.tabs(["📊 전체 추이 (막대)", "📈 용도별 상세 (선형)"])
-                
-                # Tab 1: 전체 (막대 그래프)
-                with tab1:
-                    total_by_year = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
-                    st.markdown("##### 📌 연도별 필요 최소 판매량 총합")
-                    
-                    st.bar_chart(total_by_year, color="#FF6C6C")
-                    
-                    # 수치 테이블
-                    display_df = pd.DataFrame(total_by_year).reset_index()
-                    display_df.columns = ['Year', 'Total Volume (MJ)']
-                    st.dataframe(display_df.style.format({"Total Volume (MJ)": "{:,.0f}"}), hide_index=True)
-                
-                # Tab 2: 용도별 (선택형 꺾은선)
-                with tab2:
-                    col_use = find_col(chart_df, ["용도", "구분"])
-                    if col_use:
-                        usage_list = sorted(chart_df[col_use].unique().tolist())
-                        # [요청 반영] '전체 합계' 옵션 추가
-                        usage_list.insert(0, "전체 합계 (Total)")
-                        
-                        selected_usage = st.selectbox("분석할 용도를 선택하세요:", usage_list)
-                        
-                        full_idx = range(2020, 2025)
-                        
-                        if selected_usage == "전체 합계 (Total)":
-                            # 전체 데이터 사용
-                            usage_by_year = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
-                            chart_color = "#FF4B4B" # 빨간색 (전체)
-                        else:
-                            # 특정 용도 필터링
-                            filtered_df = chart_df[chart_df[col_use] == selected_usage]
-                            usage_by_year = filtered_df.groupby('년도')['최소경제성만족판매량'].sum()
-                            chart_color = "#FFA500" # 주황색 (개별)
-                        
-                        # 빈 연도 0 처리
-                        usage_by_year = usage_by_year.reindex(full_idx, fill_value=0)
-                        
-                        st.markdown(f"##### 📈 [{selected_usage}] 판매량 추세선")
-                        
-                        st.line_chart(usage_by_year, color=chart_color)
-                        
-                        with st.expander("데이터 테이블 보기"):
-                            display_df = pd.DataFrame(usage_by_year).reset_index()
-                            display_df.columns = ['Year', 'Minimum Volume (MJ)']
-                            st.dataframe(display_df.style.format({"Minimum Volume (MJ)": "{:,.0f}"}), hide_index=True)
-                    else:
-                        st.warning("용도 컬럼이 없습니다.")
-
-        # ==================================================================
-        # [NEW] 📈 누적 판매량 그래프 (Cumulative) - 맨 하단 추가
-        # ==================================================================
-        if 'chart_df' in locals() and not chart_df.empty:
-            st.divider()
-            st.subheader("📚 연도별 누적 최소 판매량 (Cumulative)")
-            st.markdown("**(2020년부터 해당 연도까지의 누적 합계)** - 장기적인 물량 확보 목표를 보여줍니다.")
-            
-            # 1. 연도별 합계 계산
-            annual_sum = chart_df.groupby('년도')['최소경제성만족판매량'].sum().sort_index()
-            # 0으로 빈 연도 채우기 (2020~2024)
-            full_idx = range(2020, 2025)
-            annual_sum = annual_sum.reindex(full_idx, fill_value=0)
-            
-            # 2. 누적 합계 계산 (cumsum)
-            cumulative_sum = annual_sum.cumsum()
-            
-            # 3. 그래프 표시 (영역 차트 or 막대 차트)
-            # 누적은 쌓이는 느낌이므로 Area Chart 또는 Bar Chart가 좋습니다.
-            
-            st.bar_chart(cumulative_sum, color="#4CAF50") # 초록색 (누적 성장 느낌)
-            
-            # 테이블 표시
-            cum_df = pd.DataFrame({
-                "연도": cumulative_sum.index,
-                "누적 판매량 (MJ)": cumulative_sum.values
-            })
-            st.dataframe(cum_df.style.format({"누적 판매량 (MJ)": "{:,.0f}"}), hide_index=True, use_container_width=True)
-
-        # ==================================================================
-        # 기존 상세 산출 근거 (맨 아래 유지)
-        # ==================================================================
-        st.divider()
-        st.subheader("🧮 개별 프로젝트 상세")
+        st.subheader("🧮 개별 프로젝트 산출 근거")
         
         name_col = find_col(result_df, ["투자분석명", "공사명"])
         if name_col:
@@ -395,3 +301,119 @@ if df is not None:
                     st.success("✅ NPV ≈ 0 검증 완료")
                 else:
                     st.warning("⚠️ 미세 오차 발생")
+
+        # ==================================================================
+        # 3. [위치 변경] 그래프 섹션 (맨 하단으로 이동)
+        # ==================================================================
+        
+        # 공통 데이터 준비
+        col_id = find_col(result_df, ["공사관리번호", "관리번호"])
+        chart_data_ready = False
+        chart_df = pd.DataFrame()
+
+        if col_id:
+            chart_df = result_df.copy()
+            chart_df['년도'] = chart_df[col_id].astype(str).str[:4]
+            chart_df = chart_df[chart_df['년도'].str.isnumeric()]
+            chart_df['년도'] = chart_df['년도'].astype(int)
+            chart_df = chart_df[(chart_df['년도'] >= 2020) & (chart_df['년도'] <= 2024)]
+            if not chart_df.empty:
+                chart_data_ready = True
+
+        if chart_data_ready:
+            st.divider()
+            st.header("📉 경제성 분석 리포트 (Visual Analytics)")
+            
+            # 3-1. 연도별 분석 리포트
+            st.subheader("1. 연도별 최소 판매량 추이 (Annual)")
+            
+            tab1, tab2 = st.tabs(["📊 전체 추이 (막대)", "📈 용도별 상세 (선형)"])
+            
+            # Tab 1: 전체
+            with tab1:
+                total_by_year = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
+                st.bar_chart(total_by_year, color="#FF6C6C")
+                
+                display_df = pd.DataFrame(total_by_year).reset_index()
+                display_df.columns = ['Year', 'Total Volume (MJ)']
+                st.dataframe(display_df.style.format({"Total Volume (MJ)": "{:,.0f}"}), hide_index=True)
+            
+            # Tab 2: 용도별
+            with tab2:
+                col_use = find_col(chart_df, ["용도", "구분"])
+                if col_use:
+                    usage_list = sorted(chart_df[col_use].unique().tolist())
+                    usage_list.insert(0, "전체 합계 (Total)")
+                    
+                    selected_usage = st.selectbox("분석할 용도 선택:", usage_list, key="annual_usage")
+                    
+                    full_idx = range(2020, 2025)
+                    
+                    if selected_usage == "전체 합계 (Total)":
+                        usage_by_year = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
+                        chart_color = "#FF4B4B"
+                    else:
+                        filtered_df = chart_df[chart_df[col_use] == selected_usage]
+                        usage_by_year = filtered_df.groupby('년도')['최소경제성만족판매량'].sum()
+                        chart_color = "#FFA500"
+                    
+                    usage_by_year = usage_by_year.reindex(full_idx, fill_value=0)
+                    st.line_chart(usage_by_year, color=chart_color)
+                    
+                    display_df = pd.DataFrame(usage_by_year).reset_index()
+                    display_df.columns = ['Year', 'Volume (MJ)']
+                    st.dataframe(display_df.style.format({"Volume (MJ)": "{:,.0f}"}), hide_index=True)
+                else:
+                    st.warning("용도 컬럼 없음")
+
+            # 3-2. 누적 분석 리포트 (기능 업그레이드)
+            st.divider()
+            st.subheader("2. 연도별 누적 최소 판매량 (Cumulative)")
+            st.markdown("**(2020년부터 누적된 목표 판매량 총합)**")
+            
+            tab_cum1, tab_cum2 = st.tabs(["📊 전체 누적 (막대)", "📈 용도별 누적 (선형)"])
+            
+            # Tab 1: 전체 누적
+            with tab_cum1:
+                annual_sum = chart_df.groupby('년도')['최소경제성만족판매량'].sum().sort_index()
+                full_idx = range(2020, 2025)
+                annual_sum = annual_sum.reindex(full_idx, fill_value=0)
+                cumulative_sum = annual_sum.cumsum()
+                
+                st.bar_chart(cumulative_sum, color="#4CAF50") # 초록색
+                
+                cum_df = pd.DataFrame({
+                    "연도": cumulative_sum.index,
+                    "누적 판매량 (MJ)": cumulative_sum.values
+                })
+                st.dataframe(cum_df.style.format({"누적 판매량 (MJ)": "{:,.0f}"}), hide_index=True)
+
+            # Tab 2: 용도별 누적 (신규 추가)
+            with tab_cum2:
+                col_use = find_col(chart_df, ["용도", "구분"])
+                if col_use:
+                    usage_list_cum = sorted(chart_df[col_use].unique().tolist())
+                    usage_list_cum.insert(0, "전체 합계 (Total)")
+                    
+                    selected_usage_cum = st.selectbox("누적 분석할 용도 선택:", usage_list_cum, key="cum_usage")
+                    
+                    if selected_usage_cum == "전체 합계 (Total)":
+                        annual_data = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
+                        chart_color_cum = "#2E7D32" # 진한 초록
+                    else:
+                        filtered_df_cum = chart_df[chart_df[col_use] == selected_usage_cum]
+                        annual_data = filtered_df_cum.groupby('년도')['최소경제성만족판매량'].sum()
+                        chart_color_cum = "#009688" # 청록색
+                    
+                    annual_data = annual_data.reindex(full_idx, fill_value=0)
+                    cumulative_data = annual_data.cumsum()
+                    
+                    st.line_chart(cumulative_data, color=chart_color_cum)
+                    
+                    cum_disp_df = pd.DataFrame(cumulative_data).reset_index()
+                    cum_disp_df.columns = ['Year', 'Cumulative Volume (MJ)']
+                    st.dataframe(cum_disp_df.style.format({"Cumulative Volume (MJ)": "{:,.0f}"}), hide_index=True)
+
+        elif not chart_data_ready:
+            st.divider()
+            st.info("⚠️ 2020~2024년 데이터가 없어 그래프를 그릴 수 없습니다.")
