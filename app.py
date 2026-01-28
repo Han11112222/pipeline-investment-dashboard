@@ -134,7 +134,8 @@ with st.sidebar:
     
     st.divider()
     st.subheader("⚙️ 분석 기준")
-    target_irr_percent = st.number_input("목표 IRR (%)", value=6.1500, format="%.4f", step=0.0001)
+    # [요청 반영] 소수점 2자리, 0.01 단위 조정
+    target_irr_percent = st.number_input("목표 IRR (%)", value=6.15, format="%.2f", step=0.01)
     tax_rate_percent = st.number_input("세율 (%)", value=20.9, format="%.1f", step=0.1)
     period_input = st.number_input("상각 기간 (년)", value=30, step=1)
     
@@ -158,7 +159,7 @@ st.title("💰 도시가스 배관투자 경제성 분석기")
 st.markdown("💡 **엑셀 기준(Year 0 투자 → Year 1~30 회수) 단순 연금 모델 적용**")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("목표 IRR", f"{target_irr_percent:.4f}%")
+c1.metric("목표 IRR", f"{target_irr_percent:.2f}%") # 2자리 표시
 c2.metric("적용 세율", f"{tax_rate_percent}%")
 c3.metric("유지비", f"{cost_maint_m_input:,}원")
 c4.metric("적용 마진", f"{margin_override_input:.4f}" if margin_override_input > 0 else "자동")
@@ -227,78 +228,77 @@ if df is not None:
             writer.sheets['Sheet1'].set_column('A:Z', 18)
         st.download_button("📥 엑셀 다운로드", output.getvalue(), "분석결과.xlsx", "primary")
 
-        # ==================================================================
-        # [NEW] 📉 연도별 경제성 분석 리포트 (그래프 섹션)
-        # ==================================================================
+        # ------------------------------------------------------------------
+        # [NEW] 📉 연도별 경제성 분석 리포트 (맨 하단 배치)
+        # ------------------------------------------------------------------
         st.divider()
         st.subheader("📉 연도별 경제성 분석 리포트 (2020~2024)")
-        st.markdown(f"**목표 IRR {target_irr_percent}%**를 달성하기 위해 필요한 **최소 판매량 총합**입니다.")
+        st.markdown(f"**목표 IRR {target_irr_percent:.2f}%**를 달성하기 위해 필요한 최소 판매량 추이입니다.")
 
-        # 1. 연도 추출 (공사관리번호 앞 4자리)
+        # 1. 연도 추출
         col_id = find_col(result_df, ["공사관리번호", "관리번호"])
-        
         if col_id:
-            # 원본 데이터 손상 방지용 복사
             chart_df = result_df.copy()
-            
-            # 연도 추출 (문자열 변환 -> 앞 4자리 -> 숫자 변환)
             chart_df['년도'] = chart_df[col_id].astype(str).str[:4]
-            # 숫자가 아닌 데이터 제거 (안전장치)
             chart_df = chart_df[chart_df['년도'].str.isnumeric()]
             chart_df['년도'] = chart_df['년도'].astype(int)
-            
-            # 2020~2024 필터링
             chart_df = chart_df[(chart_df['년도'] >= 2020) & (chart_df['년도'] <= 2024)]
             
             if not chart_df.empty:
-                # 탭 구성
-                tab1, tab2 = st.tabs(["📊 전체 판매량 추이", "🏗️ 용도별 상세 분석"])
+                tab1, tab2 = st.tabs(["📊 전체 추이 (막대)", "📈 용도별 추이 (선형)"])
                 
-                # Tab 1: 전체 그래프
+                # Tab 1: 전체 (막대 그래프)
                 with tab1:
-                    # 연도별 합계
-                    total_by_year = chart_df.groupby('년도')['최소경제성만족판매량'].sum().reset_index()
-                    total_by_year.columns = ['Year', 'Minimum Volume (MJ)']
-                    
+                    total_by_year = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
                     st.markdown("##### 📌 연도별 필요 최소 판매량 총합")
-                    st.bar_chart(total_by_year.set_index('Year'), color="#FF6C6C") # 붉은색 계열
-                    
-                    # 데이터 테이블 표시
-                    with st.expander("상세 데이터 보기"):
-                        st.dataframe(total_by_year.style.format({"Minimum Volume (MJ)": "{:,.0f}"}))
-
-                # Tab 2: 용도별 그래프
+                    st.bar_chart(total_by_year, color="#FF6C6C")
+                
+                # Tab 2: 용도별 (꺾은선 그래프 - 선택형)
                 with tab2:
                     col_use = find_col(chart_df, ["용도", "구분"])
                     if col_use:
-                        # 연도/용도별 합계
-                        usage_by_year = chart_df.groupby(['년도', col_use])['최소경제성만족판매량'].sum().reset_index()
+                        # 용도 리스트 추출
+                        usage_list = sorted(chart_df[col_use].unique().tolist())
                         
-                        # 피벗 (그래프용)
-                        pivot_df = usage_by_year.pivot(index='년도', columns=col_use, values='최소경제성만족판매량').fillna(0)
+                        # [요청 반영] 용도 선택 드롭다운
+                        selected_usage = st.selectbox("분석할 용도를 선택하세요:", usage_list)
                         
-                        st.markdown("##### 📌 용도별 필요 판매량 구성")
-                        st.bar_chart(pivot_df)
+                        # 선택된 용도 필터링
+                        filtered_df = chart_df[chart_df[col_use] == selected_usage]
+                        usage_by_year = filtered_df.groupby('년도')['최소경제성만족판매량'].sum()
                         
-                        st.info("💡 색상은 각 용도(공동주택, 산업용 등)를 나타냅니다.")
+                        # 데이터가 없는 연도도 0으로 채우기 위해 인덱스 재설정
+                        full_idx = range(2020, 2025)
+                        usage_by_year = usage_by_year.reindex(full_idx, fill_value=0)
+                        
+                        st.markdown(f"##### 📈 [{selected_usage}] 필요 판매량 추이")
+                        
+                        # [요청 반영] 꺾은선 그래프 (Line Chart)
+                        st.line_chart(usage_by_year, color="#FFA500") # 주황색 라인
+                        
+                        # 수치 테이블 함께 표시
+                        with st.expander("데이터 테이블 보기"):
+                            display_df = pd.DataFrame(usage_by_year).reset_index()
+                            display_df.columns = ['Year', 'Minimum Volume (MJ)']
+                            st.dataframe(display_df.style.format({"Minimum Volume (MJ)": "{:,.0f}"}), hide_index=True)
+                            
                     else:
-                        st.warning("용도 컬럼을 찾을 수 없어 상세 그래프를 그릴 수 없습니다.")
+                        st.warning("용도 컬럼을 찾을 수 없습니다.")
             else:
-                st.info("⚠️ 2020년~2024년에 해당하는 데이터가 없습니다.")
-        else:
-            st.warning("⚠️ '공사관리번호' 컬럼이 없어 연도를 추출할 수 없습니다.")
+                st.info("⚠️ 2020~2024년 데이터가 없습니다.")
 
         # ==================================================================
-        # 기존 상세 산출 근거 (맨 아래 유지)
+        # 상세 산출 근거 (맨 아래 유지)
         # ==================================================================
         st.divider()
-        st.subheader("🧮 개별 프로젝트 산출 근거")
+        st.subheader("🧮 개별 프로젝트 상세")
         
         name_col = find_col(result_df, ["투자분석명", "공사명"])
         if name_col:
             selected = st.selectbox("프로젝트 선택:", result_df[name_col].unique())
             row = result_df[result_df[name_col] == selected].iloc[0]
             
+            # 데이터 추출
             col_inv = find_col(result_df, ["배관투자"])
             col_cont = find_col(result_df, ["분담금"])
             col_vol = find_col(result_df, ["판매량계", "연간판매량"])
