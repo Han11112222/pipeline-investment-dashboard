@@ -40,11 +40,10 @@ def parse_value(value):
         return 0.0
 
 # --------------------------------------------------------------------------
-# [함수] 엑셀 동일 로직 (단순 연 단위 계산)
+# [함수] 엑셀형 단순 연금 계산 로직 (Standard Annuity)
 # --------------------------------------------------------------------------
 def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admin_hh, cost_admin_m, margin_override=None):
-    # 1. PVIFA (연금현가계수)
-    # 엑셀의 [년도별 손익 계산]과 동일하게 "기말불 연금(Ordinary Annuity)" 공식 적용
+    # PVIFA (연금현가계수)
     if target_irr == 0:
         pvifa = period
     else:
@@ -53,7 +52,6 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
     results = []
     margin_debug = [] 
     
-    # 컬럼 매칭
     col_invest = find_col(df, ["배관투자", "투자금액"])
     col_contrib = find_col(df, ["시설분담금", "분담금"])
     col_vol = find_col(df, ["연간판매량", "판매량계"])
@@ -67,7 +65,6 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
 
     for index, row in df.iterrows():
         try:
-            # 데이터 로드
             investment = parse_value(row.get(col_invest))
             contribution = parse_value(row.get(col_contrib))
             current_vol = parse_value(row.get(col_vol))
@@ -81,18 +78,14 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
                 margin_debug.append(0)
                 continue
 
-            # [Step 1] 순투자액 (Net Investment)
-            # 엑셀: 투자비 - 분담금 (0년차 현금유출)
+            # 순투자액
             net_investment = investment - contribution
-            
-            # [Step 2] 목표 연간 회수액 (Required Annual OCF)
-            # 엑셀: 30년 동안 일정하게 회수해야 하는 세후 현금흐름
             if net_investment <= 0:
                 required_capital_recovery = 0
             else:
                 required_capital_recovery = net_investment / pvifa
 
-            # [Step 3] 판관비 (비용)
+            # 판관비
             maint_cost = length * cost_maint_m
             if any(k in str(usage_str) for k in ['공동', '단독', '주택', '아파트']):
                 admin_cost = households * cost_admin_hh
@@ -100,19 +93,12 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
                 admin_cost = length * cost_admin_m
             total_sga = maint_cost + admin_cost
             
-            # [Step 4] 감가상각비 & 세전이익 역산
-            # 엑셀: (17)투자비 ÷ 30년
+            # 감가상각 & 세전이익 & 마진총액
             depreciation = investment / period
-            
-            # 공식: OCF = (EBIT * (1-t)) + Dep
-            # 변형: EBIT = (OCF - Dep) / (1-t)
             required_ebit = (required_capital_recovery - depreciation) / (1 - tax_rate)
-            
-            # [Step 5] 필요 마진총액 (Gross Margin)
-            # 마진 = EBIT + 판관비 + 감가상각비
             required_gross_margin = required_ebit + total_sga + depreciation
             
-            # [Step 6] 마진 단가 결정 (수동/자동)
+            # 마진 단가
             calculated_margin = current_profit / current_vol
             if margin_override and margin_override > 0:
                 final_margin = margin_override
@@ -124,7 +110,6 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
                 margin_debug.append(0)
                 continue
 
-            # [Step 7] 최종 목표 판매량
             required_volume = required_gross_margin / final_margin
             results.append(max(0, required_volume))
             margin_debug.append(final_margin)
@@ -136,7 +121,6 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
     df['최소경제성만족판매량'] = results
     df['적용마진(원)'] = margin_debug
     
-    # 달성률 계산 (소수점 1자리 표시용 데이터는 나중에 포맷팅)
     df['달성률'] = df.apply(
         lambda x: (x[col_vol] / x['최소경제성만족판매량'] * 100) if x['최소경제성만족판매량'] > 1 else (999.9 if x[col_vol] > 0 else 0), 
         axis=1
@@ -155,12 +139,14 @@ with st.sidebar:
     
     st.divider()
     st.subheader("⚙️ 분석 기준")
-    # [설정] 엑셀과 동일한 입력을 위해 정밀도 제공
-    target_irr_percent = st.number_input("목표 IRR (%)", value=6.1500, format="%.4f", step=0.0001)
+    
+    # [수정 완료] 0.01 단위로 변경 & 소수점 2자리 표시
+    target_irr_percent = st.number_input("목표 IRR (%)", value=6.15, format="%.2f", step=0.01)
+    
     tax_rate_percent = st.number_input("세율 (%)", value=20.9, format="%.1f", step=0.1)
     period_input = st.number_input("상각 기간 (년)", value=30, step=1)
     
-    st.subheader("💰 비용 단가 (2024년 기준)")
+    st.subheader("💰 비용 단가 (입력값 확인)")
     cost_maint_m_input = st.number_input("유지비 (원/m)", value=8222)
     cost_admin_hh_input = st.number_input("관리비 (원/전)", value=6209)
     cost_admin_m_input = st.number_input("관리비 (원/m)", value=13605)
@@ -168,7 +154,7 @@ with st.sidebar:
     st.divider()
     st.subheader("🔧 정밀 보정")
     margin_override_input = st.number_input("단위당 마진 강제 (원/MJ)", value=0.0, step=0.0001, format="%.4f")
-    st.caption("* 0이면 자동 계산 (추천)")
+    st.caption("* 0이면 자동 계산")
 
     target_irr = target_irr_percent / 100
     tax_rate = tax_rate_percent / 100
@@ -177,11 +163,11 @@ with st.sidebar:
 # [UI] 메인 화면
 # --------------------------------------------------------------------------
 st.title("💰 도시가스 배관투자 경제성 분석기")
-st.markdown("💡 **엑셀 기준(Year 0 투자 → Year 1~30 회수) 단순 연금 모델 적용**")
+st.markdown("💡 **엑셀 기준 (단순 연 단위, Simple Annuity) 적용**")
 
-# 상단 요약
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("목표 IRR", f"{target_irr_percent:.4f}%")
+# [수정 완료] 상단 메트릭도 깔끔하게 2자리 표시
+c1.metric("목표 IRR", f"{target_irr_percent:.2f}%") 
 c2.metric("적용 세율", f"{tax_rate_percent}%")
 c3.metric("유지비", f"{cost_maint_m_input:,}원")
 c4.metric("적용 마진", f"{margin_override_input:.4f}" if margin_override_input > 0 else "자동")
@@ -226,17 +212,17 @@ if df is not None:
             if found:
                 final_df[label] = result_df[found]
         
-        # [핵심] 화면 표시는 깔끔하게 (소수점 1자리)
         try:
             styler = final_df.style
             if "최소경제성만족판매량(MJ)" in final_df.columns:
                 styler = styler.background_gradient(subset=["최소경제성만족판매량(MJ)"], cmap="Oranges")
             
+            # [유지] 결과값은 깔끔하게 소수점 1자리
             format_dict = {
                 "현재판매량(MJ)": "{:,.0f}",
-                "최소경제성만족판매량(MJ)": "{:,.1f}", # 요청하신 1자리
-                "달성률": "{:.1f}%",                 # 요청하신 1자리
-                "적용마진(원/MJ)": "{:.4f}"            # 마진은 정밀하게 확인
+                "최소경제성만족판매량(MJ)": "{:,.1f}", 
+                "달성률": "{:.1f}%",                 
+                "적용마진(원/MJ)": "{:.4f}"            
             }
             valid_format = {k: v for k, v in format_dict.items() if k in final_df.columns}
             styler = styler.format(valid_format)
@@ -255,7 +241,7 @@ if df is not None:
         # 상세 산출 근거 (엑셀 대조용)
         # ------------------------------------------------------------------
         st.divider()
-        st.subheader("🧮 산출 근거 상세 (Excel Logic Check)")
+        st.subheader("🧮 산출 근거 상세")
         
         name_col = find_col(result_df, ["투자분석명", "공사명"])
         if name_col:
@@ -327,4 +313,4 @@ if df is not None:
                 if abs(verify_npv) < 1000:
                     st.success("✅ 엑셀식 NPV 검증 완료 (Year 0 지출, Year 1~30 균등 회수)")
                 else:
-                    st.warning("⚠️ 미세 오차 발생")
+                    st.warning("⚠️ 미세 오차 발생 (비용 단가 또는 마진을 확인하세요)")
