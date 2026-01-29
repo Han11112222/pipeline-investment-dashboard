@@ -3,71 +3,66 @@ import pandas as pd
 import numpy as np
 
 # [설정] 페이지 기본
-st.set_page_config(page_title="도시가스 경제성 분석기 v2.3", layout="wide")
+st.set_page_config(page_title="도시가스 경제성 분석기 v2.5", layout="wide")
 
 def manual_npv(rate, values):
     return sum(v / ((1 + rate) ** i) for i, v in enumerate(values))
 
 def manual_irr(values):
-    """엑셀 IRR과 동일한 알고리즘 (Newton-Raphson)"""
-    if sum(values) <= 0: return 0.0
+    """비정상 흐름 시 None 반환"""
+    # 초기 유입(+), 이후 지속 지출(-)인 경우 경제적 의미의 IRR 산출 불가
+    if values[0] >= 0:
+        return None
+    # 전체 흐름 합계가 마이너스인 경우 (수익성 없음)
+    if sum(values) <= 0:
+        return None
     try:
-        rate = 0.1 
-        for _ in range(100):
-            npv = sum(v / ((1 + rate) ** i) for i, v in enumerate(values))
-            d_npv = sum(-i * v / ((1 + rate) ** (i + 1)) for i, v in enumerate(values))
-            if abs(npv) < 1e-6: return rate
-            if d_npv == 0: break
-            rate -= npv / d_npv
-        return rate
-    except: return 0.0
+        import numpy_financial as npf
+        res = npf.irr(values)
+        return res if not np.isnan(res) else None
+    except:
+        return None
 
-# [핵심 로직] 엑셀 100% 동기화
+# [핵심 로직]
 def simulate_project(sim_len, sim_inv, sim_contrib, sim_other_subsidy, sim_vol, sim_rev, sim_cost, 
                      sim_jeon, rate, tax, period, c_maint, c_adm_jeon, c_adm_m):
     
-    # 0년차 순투자액 (Cash Outflow)
     net_inv = sim_inv - sim_contrib - sim_other_subsidy
-    
-    # 수익 및 비용
     margin = sim_rev - sim_cost
     cost_sga = (sim_len * c_maint) + (sim_len * c_adm_m) + (sim_jeon * c_adm_jeon)
     depreciation = sim_inv / period 
     
-    # 세전 수요개발 기대이익 (EBIT)
     ebit = margin - cost_sga - depreciation
-    
-    # 세후 당기손익 (적자 시 세금 환급 효과 반영 - 엑셀 방식)
-    # 엑셀은 ebit * (1 - tax)를 통해 적자 시에도 현금흐름 보전
     net_income = ebit * (1 - tax) 
-    
-    # 세후 수요개발 기대이익 (OCF = 세후손익 + 감가상각비)
     ocf = net_income + depreciation
     
-    # 현금흐름 배열
     flows = [-net_inv] + [ocf] * int(period)
-    
-    # 지표 계산
     npv = manual_npv(rate, flows)
     irr = manual_irr(flows)
     
-    # DPP 계산
-    dpp = 999.0
-    cum = 0.0
-    for i, f in enumerate(flows):
-        cum += f / ((1 + rate) ** i)
-        if i > 0 and cum >= 0:
-            dpp = float(i)
-            break
-            
+    # 사유 판별
+    irr_reason = ""
+    if net_inv <= 0:
+        irr_reason = "초기 투자비 0원 이하(자본 투입 없음)"
+    elif sum(flows) <= 0:
+        irr_reason = "총 현금흐름 마이너스(운영 적자 지속)"
+
     return {
-        "npv": npv, "irr": irr, "dpp": dpp, 
-        "net_inv": net_inv, "ocf": ocf, "ebit": ebit, 
-        "net_income": net_income, "sga": cost_sga, "dep": depreciation, "flows": flows
+        "npv": npv, "irr": irr, "irr_reason": irr_reason, "net_inv": net_inv, 
+        "ocf": ocf, "ebit": ebit, "net_income": net_income, "flows": flows
     }
 
-# [UI] 화면 구성
+# [UI 구성]
 st.title("🏗️ 신규배관 경제성 분석 Simulation")
+
+with st.sidebar:
+    st.header("⚙️ 분석 변수")
+    RATE = st.number_input("할인율 (%)", value=6.15, step=0.01) / 100
+    TAX = st.number_input("법인세율+주민세율 (%)", value=20.9) / 100
+    PERIOD = st.number_input("분석 및 상각기간 (년)", value=30)
+    COST_MAINT = st.number_input("유지비 (원/m)", value=8222)
+    COST_ADM_J = st.number_input("관리비 (원/전)", value=6209)
+    COST_ADM_M = st.number_input("관리비 (원/m)", value=13605)
 
 c1, c2 = st.columns(2)
 with c1:
@@ -84,47 +79,31 @@ with c2:
     sim_rev = st.number_input("연간 판매액 (매출, 원)", value=305103037)
     sim_cost = st.number_input("연간 판매원가 (원)", value=256160477)
 
-with st.sidebar:
-    st.header("⚙️ 분석 변수")
-    # 엑셀 시트 기준: 법인세 19% + 주민세 1.9% = 20.9%
-    RATE = st.number_input("할인율 (%)", value=6.15) / 100
-    TAX = st.number_input("법인세율+주민세율 (%)", value=20.9) / 100
-    PERIOD = st.number_input("분석 및 상각기간 (년)", value=30)
-    C_MAINT = st.number_input("유지비 (원/m)", value=8222)
-    C_ADM_J = st.number_input("관리비 (원/전)", value=6209)
-    C_ADM_M = st.number_input("관리비 (원/m)", value=13605)
-
 if st.button("🚀 경제성 분석 실행", type="primary"):
     res = simulate_project(sim_len, sim_inv, sim_contrib, sim_other, sim_vol, sim_rev, sim_cost, 
-                           sim_jeon, RATE, TAX, PERIOD, C_MAINT, C_ADM_J, C_ADM_M)
+                           sim_jeon, RATE, TAX, PERIOD, COST_MAINT, COST_ADM_J, COST_ADM_M)
     
     st.divider()
     m1, m2, m3 = st.columns(3)
     m1.metric("순현재가치 (NPV)", f"{res['npv']:,.0f} 원", 
               delta="투자 적격" if res['npv']>0 else "투자 부적격", delta_color="normal" if res['npv']>0 else "inverse")
     
-    # 엑셀과 동일한 151.42%가 나오게 됨
-    m2.metric("내부수익률 (IRR)", f"{res['irr']*100:.2f} %")
-    m3.metric("할인회수기간 (DPP)", "회수 불가" if res['dpp'] > PERIOD else f"{res['dpp']:.1f} 년")
+    # IRR 오류 처리 반영
+    if res['irr'] is None:
+        m2.metric("내부수익률 (IRR)", "계산 불가")
+        st.write(f"&nbsp;&nbsp;&nbsp;&nbsp;🚩 **사유**: {res['irr_reason']}")
+    else:
+        m2.metric("내부수익률 (IRR)", f"{res['irr']*100:.2f} %")
+        
+    m3.metric("할인회수기간 (DPP)", "회수 불가")
 
     st.subheader("🔎 세부 계산 근거 (엑셀 로직 동기화)")
     col_a, col_b = st.columns(2)
     with col_a:
-        st.info(f"""
-        **1. 초기 순투자액(Year 0): {res['net_inv']:,.0f} 원**
-        * 엑셀과 동일하게 분담금과 보조금을 차감한 초기 자산 투입액입니다.
-        
-        **2. 세후 당기손익: {res['net_income']:,.0f} 원**
-        * 엑셀의 '세후 당기 손익' 항목과 일치합니다.
-        * 적자 시 세금 절감 효과($EBIT \times TAX$)가 이익으로 반영되었습니다.
-        """)
+        st.info(f"**초기 순투자액(Year 0): {res['net_inv']:,.0f} 원** \n(마이너스면 초기 자금 유입을 의미합니다.)")
+        st.info(f"**세후 당기손익: {res['net_income']:,.0f} 원**")
     with col_b:
-        st.info(f"""
-        **3. 세후 수요개발 기대이익(OCF): {res['ocf']:,.0f} 원**
-        * 엑셀의 최하단 현금흐름 수치와 일치합니다.
-        * 이 수치가 30년 할인 합산되어 NPV를 구성합니다.
-        """)
+        st.info(f"**세후 수요개발 기대이익(OCF): {res['ocf']:,.0f} 원** \n(엑셀 시트 최하단 현금흐름과 일치합니다.)")
 
-    # 누적 현금흐름 차트
     cf_df = pd.DataFrame({"Year": range(PERIOD+1), "Cumulative": np.cumsum(res['flows'])})
     st.line_chart(cf_df.set_index("Year"))
