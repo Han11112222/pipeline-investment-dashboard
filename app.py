@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # [설정] 페이지 기본
-st.set_page_config(page_title="도시가스 경제성 분석기 v2.7", layout="wide")
+st.set_page_config(page_title="도시가스 경제성 분석기 v2.8", layout="wide")
 
 def manual_npv(rate, values):
     return sum(v / ((1 + rate) ** i) for i, v in enumerate(values))
@@ -36,7 +36,7 @@ def simulate_project(sim_len, sim_inv, sim_contrib, sim_other_subsidy, sim_vol, 
     # 세전 영업이익 (EBIT)
     ebit = margin - cost_sga - depreciation
     
-    # 세금 환급 효과 반영 (Tax Shield)
+    # 세금 환급 효과 반영 (Tax Shield - 엑셀 로직)
     net_income = ebit * (1 - tax) 
     
     # 세후 수요개발 기대이익 (OCF = 세후당기손익 + 감가상각비)
@@ -112,7 +112,7 @@ if st.button("🚀 경제성 분석 실행", type="primary"):
 
     st.divider()
 
-    # NPV 산출 사유 분석 (에러 수정 및 문구 추가)
+    # NPV 산출 사유 분석
     st.subheader("🧐 NPV 산출 사유 분석")
     st.markdown(f"""
     현재 NPV가 **{res['npv']:,.0f}원**으로 산출된 주요 원인은 다음과 같습니다:
@@ -120,7 +120,7 @@ if st.button("🚀 경제성 분석 실행", type="primary"):
     1. **운영 수익성 결여**: 연간 매출 마진({res['margin']:,.0f}원)보다 판관비 합계({res['sga']:,.0f}원)가 더 커서 본원적인 영업 적자 상태입니다.
     2. **감가상각 부담**: 총 공사비 70억 원에 대해 매년 **{res['dep']:,.0f}원**의 감가상각비가 발생하여 비용 부담을 가중시키고 있습니다.
     3. **현금흐름 적자 지속**: 세금 절감 효과와 감가상각비 환입을 고려하더라도, 매년 **{res['ocf']:,.0f}원**의 **세후 수요개발 기대이익(적자)**이 발생하고 있습니다.
-    4. **미래 가치 누적**: 매년 발생하는 약 {abs(res['ocf'])/1000000:,.1f}백만 원의 손실이 {PERIOD}년 동안 누적 및 할인되어 최종 NPV에 반영되었습니다.
+    4. **미래 가치 누적**: 매년 발생하는 약 **{abs(res['ocf']):,.0f}원**의 손실이 {PERIOD}년 동안 누적 및 할인되어 최종 NPV에 반영되었습니다.
     """)
 
     # 세부 수치 요약
