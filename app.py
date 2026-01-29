@@ -40,7 +40,7 @@ def parse_value(value):
         return 0.0
 
 # --------------------------------------------------------------------------
-# [함수] 1. 기존 분석 로직 (관리용)
+# [함수] 1. 기존 분석 로직 (관리용 - 기존 코드 유지)
 # --------------------------------------------------------------------------
 def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admin_hh, cost_admin_m, margin_override=None):
     if target_irr == 0:
@@ -83,14 +83,14 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
             else:
                 required_capital_recovery = net_investment / pvifa
 
-            # 기존 데이터 분석용 (엑셀 일괄 처리)
+            # 기존 데이터 분석 로직 (기존 엑셀 데이터와의 호환성 유지)
             maint_cost = length * cost_maint_m
             
-            # 기존 데이터는 용도에 따라 분기 처리 (기존 로직 유지)
             if any(k in str(usage_str) for k in ['공동', '단독', '주택', '아파트']):
                 admin_cost = households * cost_admin_hh
             else:
                 admin_cost = length * cost_admin_m
+            
             total_sga = maint_cost + admin_cost
             
             depreciation = investment / period
@@ -127,11 +127,10 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
     return df, results, None
 
 # --------------------------------------------------------------------------
-# [함수] 2. 신규 시뮬레이션 로직 (무조건 3가지 합산, 에러 방지)
+# [함수] 2. 신규 시뮬레이션 로직 (형님 요청: 3가지 비용 무조건 합산)
 # --------------------------------------------------------------------------
 
 def calculate_internal_irr(cash_flows, guess=0.1):
-    """IRR 안전 계산 함수"""
     rate = guess
     for _ in range(100):
         npv = sum([cf / ((1+rate)**t) for t, cf in enumerate(cash_flows)])
@@ -146,23 +145,17 @@ def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost,
                      cost_maint, cost_admin_jeon, cost_admin_m):
     
     # 1. 기초 데이터
-    profit = rev - cost
-    net_inv = inv_amt - contrib
+    profit = rev - cost  # 마진
+    net_inv = inv_amt - contrib # 순투자액
     
-    # 2. 판관비 계산 (형님 요청: 선택 없이 무조건 3가지 다 더함)
-    # 변수명 혼동 방지를 위해 명확하게 매칭
+    # 2. 판관비 계산 (여기가 핵심!)
+    # 무조건 3가지를 다 더합니다. (조건문 삭제)
     
-    # (1) 배관 유지비 (m당)
-    cost_1 = inv_len * cost_maint        
+    cost_1 = inv_len * cost_maint        # 배관 유지비 (m당)
+    cost_2 = inv_len * cost_admin_m      # 일반 관리비 (m당)
+    cost_3 = num_jeon * cost_admin_jeon  # 일반 관리비 (전당)
     
-    # (2) 일반 관리비 (m당) -> 용도 상관없이 무조건 부과
-    cost_2 = inv_len * cost_admin_m      
-    
-    # (3) 일반 관리비 (전당) -> 용도 상관없이 무조건 부과
-    cost_3 = num_jeon * cost_admin_jeon  
-    
-    # 총 판관비 합계
-    total_sga = cost_1 + cost_2 + cost_3
+    total_sga = cost_1 + cost_2 + cost_3 # 무조건 합산
     
     # 3. 감가상각 & OCF
     dep = inv_amt / period
@@ -170,7 +163,7 @@ def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost,
     nopat = ebit * (1 - tax_rate)
     ocf = nopat + dep
     
-    # 4. 현금흐름
+    # 4. 현금흐름 배열
     cash_flows = [-net_inv] + [ocf] * int(period)
     
     # 5. 지표 계산
@@ -208,9 +201,10 @@ with st.sidebar:
     st.divider()
 
 # --------------------------------------------------------------------------
-# [화면 1] 관리 (기존)
+# [화면 1] 배관투자 경제성 분석 관리 (기존)
 # --------------------------------------------------------------------------
 if page_mode == "배관투자 경제성 분석 관리":
+    
     with st.sidebar:
         st.subheader("📂 파일 설정")
         data_source = st.radio("소스", ("GitHub 파일", "엑셀 업로드"))
@@ -492,17 +486,17 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         sim_cost_maint = st.number_input("배관 유지비 (원/m)", value=8222)
         
         st.markdown("**일반관리비 단가 (두 가지)**")
-        # [주의] 여기서 정의한 변수명이 simulate_project 호출부와 일치해야 에러가 안 납니다.
+        # [변수명 중요] 여기서 정의한 변수를 아래 함수 호출 시 그대로 써야 함
         sim_cost_admin_jeon = st.number_input("일반관리비 (원/전)", value=6209)
         sim_cost_admin_m = st.number_input("일반관리비 (원/m)", value=13605)
 
     st.title("🏗️ 신규배관 경제성 분석 Simulation")
     st.markdown("💡 **신규 투자 건에 대해 NPV, IRR, 회수기간을 시뮬레이션합니다.**")
-    st.warning("🚨 **[중요]** 본 시뮬레이션은 형님의 요청대로 **3가지 판관비(배관유지비+일반m당+일반전당)를 모두 합산**하여 계산합니다.")
+    st.info("※ 본 시뮬레이션은 형님의 요청대로 **3가지 판관비(배관유지비+일반m당+일반전당)를 무조건 합산**하여 계산합니다.")
     
     st.divider()
     
-    # 입력 폼 (2단 레이아웃)
+    # 입력 폼
     col1, col2 = st.columns(2)
     
     with col1:
@@ -527,7 +521,6 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
     
     if st.button("🚀 경제성 분석 실행 (Run Analysis)", type="primary"):
         # 계산
-        # 여기서 사이드바의 변수명(sim_cost_admin_jeon 등)을 정확히 전달합니다.
         res = simulate_project(
             sim_len, sim_inv, sim_contrib, sim_other, sim_vol, sim_rev, sim_cost,
             sim_jeon, sim_discount_rate/100, sim_tax_rate/100, sim_period,
@@ -551,9 +544,9 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         m3.metric("3. 할인회수기간 (DPP)", dpp_display,
                   delta="원금 회수 시점", delta_color="off")
         
-        # 상세 데이터 (비용 구조 명확화)
+        # 상세 데이터
         st.error(f"""
-        **[비용 합산 상세 (3중 구조 - 무조건 합산)]**
+        **[비용 합산 상세 (3가지 모두 포함)]**
         * **1) 배관 유지비 (m당):** {res['c1']:,.0f} 원 ({sim_len:,.0f}m × {sim_cost_maint:,.0f}원)
         * **2) 일반관리비 (m당):** {res['c2']:,.0f} 원 ({sim_len:,.0f}m × {sim_cost_admin_m:,.0f}원)
         * **3) 일반관리비 (전당):** {res['c3']:,.0f} 원 ({sim_jeon}전 × {sim_cost_admin_jeon:,.0f}원)
