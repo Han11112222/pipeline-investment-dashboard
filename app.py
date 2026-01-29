@@ -40,7 +40,7 @@ def parse_value(value):
         return 0.0
 
 # --------------------------------------------------------------------------
-# [함수] 1. 기존 분석 로직 (관리용) - 엑셀 단순 연금 방식
+# [함수] 1. 기존 분석 로직 (관리용)
 # --------------------------------------------------------------------------
 def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admin_hh, cost_admin_m, margin_override=None):
     if target_irr == 0:
@@ -129,27 +129,20 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
 
 # [NEW] 라이브러리 독립형 IRR 계산 함수 (Newton-Raphson Method)
 def calculate_internal_irr(cash_flows, guess=0.1):
-    try:
-        # np.irr이 있으면 사용 (구버전 호환)
-        if hasattr(np, 'irr'):
-            return np.irr(cash_flows)
-    except:
-        pass
-        
-    # 직접 계산 로직 (신버전 대응)
+    # 직접 계산 로직 (에러 방지)
     rate = guess
     for _ in range(100): # 최대 100회 반복
         # NPV 계산
         npv = sum([cf / ((1+rate)**t) for t, cf in enumerate(cash_flows)])
         if abs(npv) < 1e-6: return rate
         
-        # NPV 미분 (Derivative)
+        # NPV 미분
         d_npv = sum([-t * cf / ((1+rate)**(t+1)) for t, cf in enumerate(cash_flows)])
         if d_npv == 0: return 0
         
-        rate -= npv / d_npv # 뉴턴-랩슨 공식
+        rate -= npv / d_npv
         
-    return rate if abs(rate) < 100 else 0 # 비정상 값이면 0 반환
+    return rate if abs(rate) < 100 else 0
 
 def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost, 
                      usage, households, discount_rate, tax_rate, period,
@@ -159,7 +152,7 @@ def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost,
     profit = rev - cost  # 판매마진
     net_inv = inv_amt - contrib # 순투자액
     
-    # 2. 판관비 계산
+    # 2. 판관비 계산 (핵심: 용도에 따른 자동 분기)
     maint_c = inv_len * cost_maint
     if "주택" in usage:
         admin_c = households * cost_admin_hh
@@ -171,7 +164,6 @@ def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost,
     dep = inv_amt / period
     
     # 4. 연간 영업현금흐름 (OCF)
-    # EBIT = (마진 + 기타이익) - 판관비 - 감가상각
     ebit = (profit + other_profit) - total_sga - dep
     nopat = ebit * (1 - tax_rate)
     ocf = nopat + dep
@@ -181,10 +173,10 @@ def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost,
     
     # 6. 경제성 지표 계산
     
-    # (1) NPV (수동 계산으로 안전성 확보)
+    # (1) NPV (수동 계산)
     npv = sum([cf / ((1 + discount_rate) ** t) for t, cf in enumerate(cash_flows)])
     
-    # (2) IRR (전용 함수 사용)
+    # (2) IRR (전용 함수)
     irr = calculate_internal_irr(cash_flows)
         
     # (3) 할인회수기간 (DPP)
@@ -196,7 +188,6 @@ def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost,
         cum_discounted_cf += dc
         
         if t > 0 and cum_discounted_cf >= 0:
-            # 보간법 (Interpolation)
             prev_cum = cum_discounted_cf - dc
             if dc != 0:
                 fraction = abs(prev_cum) / dc
@@ -523,7 +514,7 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         
         st.markdown("---")
         st.subheader("2. 시설 특성")
-        sim_usage = st.selectbox("용도 선택", ["주택용 (공동/단독)", "기타 (업무/영업/산업)"])
+        sim_usage = st.selectbox("용도 선택", ["주택용 (공동/단독/다가구)", "기타 (업무/영업/산업)"])
         sim_hh = st.number_input("세대수 (주택용일 경우)", value=50, step=1)
 
     with col2:
@@ -546,9 +537,7 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         # 결과 대시보드 (3가지 핵심 지표 강조)
         st.subheader("📊 시뮬레이션 결과 (핵심 지표)")
         
-        # [핵심 수정] 3개 컬럼으로 3대장 강조
         m1, m2, m3 = st.columns(3)
-        
         m1.metric("1. 순현재가치 (NPV)", f"{res['npv']:,.0f} 원", 
                   delta="투자 적격" if res['npv']>0 else "투자 부적격", 
                   delta_color="normal" if res['npv']>0 else "inverse")
