@@ -1,136 +1,229 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
+import io
+import os
 
+# --------------------------------------------------------------------------
 # [설정] 페이지 기본
-st.set_page_config(page_title="도시가스 경제성 분석기 v2.8", layout="wide")
+# --------------------------------------------------------------------------
+st.set_page_config(page_title="도시가스 경제성 분석 시스템", layout="wide")
+
+# --------------------------------------------------------------------------
+# [공통 함수] 데이터 파싱 및 금융 계산
+# --------------------------------------------------------------------------
+def clean_column_names(df):
+    df.columns = [str(c).replace("\n", "").replace(" ", "").replace("\t", "").strip() for c in df.columns]
+    return df
+
+def find_col(df, keywords):
+    for col in df.columns:
+        for kw in keywords:
+            if kw in col: return col
+    return None
+
+def parse_value(value):
+    try:
+        if pd.isna(value) or value == '': return 0.0
+        clean_str = str(value).replace(',', '')
+        numbers = re.findall(r"[-+]?\d*\.\d+|\d+", clean_str)
+        return float(numbers[0]) if numbers else 0.0
+    except: return 0.0
 
 def manual_npv(rate, values):
     return sum(v / ((1 + rate) ** i) for i, v in enumerate(values))
 
 def manual_irr(values):
-    """비정상적 현금흐름 시 계산 불가 처리"""
-    if values[0] >= 0: # 초기 투자비가 0원 이하인 경우
-        return None
-    if sum(values) <= 0: # 총 회수액이 투자액보다 적은 경우
-        return None
+    if values[0] >= 0 or sum(values) <= 0: return None
     try:
+        # 간단한 Newton-Raphson 로직 혹은 numpy-financial 사용 가능
         import numpy_financial as npf
         res = npf.irr(values)
         return res if not np.isnan(res) and res < 5 else None
-    except:
-        return None
+    except: return None
 
-# [핵심 로직]
-def simulate_project(sim_len, sim_inv, sim_contrib, sim_other_subsidy, sim_vol, sim_rev, sim_cost, 
-                     sim_jeon, rate, tax, period, c_maint, c_adm_jeon, c_adm_m):
-    
-    # 0년차 초기 투자비
-    net_inv = sim_inv - sim_contrib - sim_other_subsidy
-    
-    # 수익 및 비용 계산
-    margin = sim_rev - sim_cost
-    cost_sga = (sim_len * c_maint) + (sim_len * c_adm_m) + (sim_jeon * c_adm_jeon)
-    depreciation = sim_inv / period 
-    
-    # 세전 영업이익 (EBIT)
-    ebit = margin - cost_sga - depreciation
-    
-    # 세금 환급 효과 반영 (Tax Shield - 엑셀 로직)
-    net_income = ebit * (1 - tax) 
-    
-    # 세후 수요개발 기대이익 (OCF = 세후당기손익 + 감가상각비)
-    ocf = net_income + depreciation
-    
-    # 전체 현금흐름 배열
-    flows = [-net_inv] + [ocf] * int(period)
-    
-    # 지표 산출
-    npv = manual_npv(rate, flows)
-    irr = manual_irr(flows)
-    
-    irr_reason = "초기 투자비 0원 이하(보조금 과다) 또는 운영 적자 지속" if irr is None else ""
+# --------------------------------------------------------------------------
+# [기능 1] 엑셀 대량 분석 로직 (모드 1용)
+# --------------------------------------------------------------------------
+def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admin_hh, cost_admin_m, margin_override=None):
+    if target_irr == 0: pvifa = period
+    else: pvifa = (1 - (1 + target_irr) ** (-period)) / target_irr
 
-    return {
-        "npv": npv, "irr": irr, "irr_reason": irr_reason, "net_inv": net_inv, 
-        "ocf": ocf, "ebit": ebit, "net_income": net_income, "sga": cost_sga, 
-        "dep": depreciation, "flows": flows, "margin": margin
-    }
+    results, margin_debug = [], []
+    col_invest = find_col(df, ["배관투자", "투자금액"])
+    col_contrib = find_col(df, ["시설분담금", "분담금"])
+    col_vol = find_col(df, ["연간판매량", "판매량계"])
+    col_profit = find_col(df, ["연간판매수익", "판매수익"])
+    col_len = find_col(df, ["길이", "연장"])
+    col_hh = find_col(df, ["계획전수", "전수", "세대수"])
+    col_usage = find_col(df, ["용도", "구분"])
 
-# [UI] 타이틀 및 입력부
-st.title("🏗️ 신규배관 경제성 분석 Simulation")
+    if not col_invest or not col_vol or not col_profit:
+        return df, [], "❌ 핵심 컬럼 미발견"
 
+    for _, row in df.iterrows():
+        try:
+            inv = parse_value(row.get(col_invest))
+            cont = parse_value(row.get(col_contrib))
+            vol = parse_value(row.get(col_vol))
+            profit = parse_value(row.get(col_profit))
+            length = parse_value(row.get(col_len))
+            hh = parse_value(row.get(col_hh))
+            usage = str(row.get(col_usage, ""))
+
+            if vol <= 0 or inv <= 0:
+                results.append(0); margin_debug.append(0); continue
+
+            net_inv = inv - cont
+            req_cap = net_inv / pvifa if net_inv > 0 else 0
+            maint_c = length * cost_maint_m
+            admin_c = hh * cost_admin_hh if any(k in usage for k in ['공동', '단독', '주택', '아파트']) else length * cost_admin_m
+            total_sga = maint_c + admin_c
+            dep = inv / period
+            req_ebit = (req_cap - dep) / (1 - tax_rate)
+            req_gross = req_ebit + total_sga + dep
+            
+            calc_margin = profit / vol if vol > 0 else 0
+            final_margin = margin_override if margin_override and margin_override > 0 else calc_margin
+            
+            if final_margin <= 0:
+                results.append(0); margin_debug.append(0); continue
+            
+            results.append(max(0, req_gross / final_margin))
+            margin_debug.append(final_margin)
+        except:
+            results.append(0); margin_debug.append(0)
+
+    df['최소경제성만족판매량'] = results
+    df['적용마진(원)'] = margin_debug
+    df['달성률'] = df.apply(lambda x: (x[col_vol] / x['최소경제성만족판매량'] * 100) if x['최소경제성만족판매량'] > 1 else (999.9 if x[col_vol] > 0 else 0), axis=1)
+    return df, results, None
+
+# --------------------------------------------------------------------------
+# [UI] 사이드바 메뉴 (모드 선택)
+# --------------------------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ 분석 변수 설정")
-    RATE = st.number_input("할인율 (%)", value=6.15, step=0.01) / 100
-    TAX = st.number_input("법인세율+주민세율 (%)", value=20.9) / 100
-    PERIOD = st.number_input("분석 및 상각기간 (년)", value=30)
-    C_MAINT = st.number_input("유지비 (원/m)", value=8222)
-    C_ADM_J = st.number_input("관리비 (원/전)", value=6209)
-    C_ADM_M = st.number_input("관리비 (원/m)", value=13605)
-
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("1. 투자 정보")
-    sim_len = st.number_input("투자 길이 (m)", value=7000.0)
-    sim_inv = st.number_input("총 공사비 (원)", value=7000000000, format="%d")
-    sim_contrib = st.number_input("시설 분담금 (원)", value=22048100, format="%d")
-    sim_other = st.number_input("기타 이익 (보조금, 원)", value=7000000000, format="%d")
-    sim_jeon = st.number_input("공급 전수 (전)", value=2)
-
-with c2:
-    st.subheader("2. 수익 정보 (연간)")
-    sim_vol = st.number_input("연간 판매량 (MJ)", value=13250280.0)
-    sim_rev = st.number_input("연간 판매액 (매출, 원)", value=305103037)
-    sim_cost = st.number_input("연간 판매원가 (원)", value=256160477)
-
-if st.button("🚀 경제성 분석 실행", type="primary"):
-    res = simulate_project(sim_len, sim_inv, sim_contrib, sim_other, sim_vol, sim_rev, sim_cost, 
-                           sim_jeon, RATE, TAX, PERIOD, C_MAINT, C_ADM_J, C_ADM_M)
-    
+    st.header("📂 메뉴 선택")
+    page_mode = st.radio("작업 모드", ["배관투자 경제성 분석 관리", "신규배관 경제성 분석 Simulation"])
     st.divider()
     
-    # 결과 지표 상단 표시
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.metric("순현재가치 (NPV)", f"{res['npv']:,.0f} 원")
-        if res['npv'] < 0: st.error("⚠️ 투자 부적격 (손실 예상)")
-        else: st.success("✅ 투자 적격 (수익 예상)")
-        st.caption("[의미] 모든 현금흐름을 현재 가치로 합산한 값입니다.")
+    # 공통 변수 설정
+    st.subheader("⚙️ 분석 기준")
+    target_irr_percent = st.number_input("목표 IRR (%)", value=6.15, format="%.2f", step=0.01)
+    tax_rate_percent = st.number_input("세율 (%)", value=20.9, format="%.1f", step=0.1)
+    period_input = st.number_input("분석 및 상각 기간 (년)", value=30, step=1)
+    
+    st.subheader("💰 비용 단가")
+    cost_maint_m = st.number_input("유지비 (원/m)", value=8222)
+    cost_admin_hh = st.number_input("관리비 (원/전)", value=6209)
+    cost_admin_m = st.number_input("관리비 (원/m)", value=13605)
+    
+    target_irr = target_irr_percent / 100
+    tax_rate = tax_rate_percent / 100
 
-    with m2:
-        if res['irr'] is None:
-            st.metric("내부수익률 (IRR)", "계산 불가")
-            st.caption(f"[알림] {res['irr_reason']}")
+# --------------------------------------------------------------------------
+# [모드 1] 배관투자 경제성 분석 관리 (대량 분석)
+# --------------------------------------------------------------------------
+if page_mode == "배관투자 경제성 분석 관리":
+    st.title("💰 배관투자 경제성 분석 관리")
+    st.markdown("💡 **엑셀 업로드 기반 다수 프로젝트 현황 분석 및 시각화**")
+    
+    with st.sidebar:
+        st.divider()
+        data_source = st.radio("데이터 소스", ("GitHub 파일", "엑셀 업로드"))
+        uploaded_file = st.file_uploader("파일 업로드", type=['xlsx']) if data_source == "엑셀 업로드" else None
+        margin_override = st.number_input("단위당 마진 강제 (원/MJ)", value=0.0, step=0.0001, format="%.4f")
+
+    df = None
+    if data_source == "GitHub 파일":
+        if os.path.exists("리스트_20260129.xlsx"): df = pd.read_excel("리스트_20260129.xlsx")
+        else: st.warning("⚠️ 기본 파일을 찾을 수 없습니다.")
+    elif uploaded_file: df = pd.read_excel(uploaded_file)
+
+    if df is not None:
+        df = clean_column_names(df)
+        result_df, _, msg = calculate_all_rows(df, target_irr, tax_rate, period_input, cost_maint_m, cost_admin_hh, cost_admin_m, margin_override)
+        
+        if msg: st.error(msg)
         else:
-            st.metric("내부수익률 (IRR)", f"{res['irr']*100:.2f} %")
-        st.caption("[의미] 투자 비용 대비 매년 기대되는 수익률입니다.")
+            st.subheader("📊 분석 결과 요약")
+            view_cols = ["공사관리번호", "투자분석명", "용도", "연간판매량", "최소경제성만족판매량", "달성률"]
+            # 실제 존재하는 컬럼만 필터링하여 출력
+            existing_cols = [c for c in result_df.columns if any(k in c for k in view_cols)]
+            st.dataframe(result_df[existing_cols].style.format({"달성률": "{:.1f}%", "최소경제성만족판매량": "{:,.0f}"}))
+            
+            # 그래프 및 누적 분석 (원본 코드의 Visual Analytics 로직)
+            col_id = find_col(result_df, ["공사관리번호", "관리번호"])
+            if col_id:
+                chart_df = result_df.copy()
+                chart_df['년도'] = chart_df[col_id].astype(str).str[:4]
+                chart_df = chart_df[chart_df['년도'].str.isnumeric()]
+                chart_df['년도'] = chart_df['년도'].astype(int)
+                
+                st.divider()
+                st.header("📉 시각화 리포트")
+                annual_sum = chart_df.groupby('년도')['최소경제성만족판매량'].sum()
+                st.bar_chart(annual_sum, color="#FF6C6C")
 
-    with m3:
-        st.metric("할인회수기간 (DPP)", "회수 불가")
-        st.caption("[의미] 투자 원금을 회수하는 데 걸리는 시간입니다.")
-
-    st.divider()
-
-    # NPV 산출 사유 분석
-    st.subheader("🧐 NPV 산출 사유 분석")
-    st.markdown(f"""
-    현재 NPV가 **{res['npv']:,.0f}원**으로 산출된 주요 원인은 다음과 같습니다:
+# --------------------------------------------------------------------------
+# [모드 2] 신규배관 경제성 분석 Simulation (개별 시뮬레이션)
+# --------------------------------------------------------------------------
+else:
+    st.title("🏗️ 신규배관 경제성 분석 Simulation")
     
-    1. **운영 수익성 결여**: 연간 매출 마진({res['margin']:,.0f}원)보다 판관비 합계({res['sga']:,.0f}원)가 더 커서 본원적인 영업 적자 상태입니다.
-    2. **감가상각 부담**: 총 공사비 70억 원에 대해 매년 **{res['dep']:,.0f}원**의 감가상각비가 발생하여 비용 부담을 가중시키고 있습니다.
-    3. **현금흐름 적자 지속**: 세금 절감 효과와 감가상각비 환입을 고려하더라도, 매년 **{res['ocf']:,.0f}원**의 **세후 수요개발 기대이익(적자)**이 발생하고 있습니다.
-    4. **미래 가치 누적**: 매년 발생하는 약 **{abs(res['ocf']):,.0f}원**의 손실이 {PERIOD}년 동안 누적 및 할인되어 최종 NPV에 반영되었습니다.
-    """)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("1. 투자 정보")
+        sim_len = st.number_input("투자 길이 (m)", value=7000.0)
+        sim_inv = st.number_input("총 공사비 (원)", value=7000000000, format="%d")
+        sim_contrib = st.number_input("시설 분담금 (원)", value=22048100, format="%d")
+        sim_other = st.number_input("기타 이익 (보조금, 원)", value=7000000000, format="%d")
+        sim_jeon = st.number_input("공급 전수 (전)", value=2)
 
-    # 세부 수치 요약
-    st.subheader("🔎 세부 계산 근거")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.info(f"**초기 순투자액(Year 0): {res['net_inv']:,.0f} 원**\n\n(공사비 - 분담금 - 보조금)")
-    with col_b:
-        st.info(f"**세후 수요개발 기대이익(OCF): {res['ocf']:,.0f} 원**\n\n(연간 실제 현금 흐름)")
+    with col2:
+        st.subheader("2. 수익 정보 (연간)")
+        sim_vol = st.number_input("연간 판매량 (MJ)", value=13250280.0)
+        sim_rev = st.number_input("연간 판매액 (매출, 원)", value=305103037)
+        sim_cost = st.number_input("연간 판매원가 (원)", value=256160477)
 
-    # 차트
-    cf_df = pd.DataFrame({"Year": range(PERIOD+1), "Cumulative": np.cumsum(res['flows'])})
-    st.line_chart(cf_df.set_index("Year"))
+    if st.button("🚀 경제성 분석 실행", type="primary"):
+        # 로직 계산 (엑셀 동기화 방식)
+        net_inv = sim_inv - sim_contrib - sim_other
+        margin = sim_rev - sim_cost
+        cost_sga = (sim_len * cost_maint) + (sim_len * cost_admin_m) + (sim_jeon * cost_admin_hh)
+        dep = sim_inv / period_input
+        ebit = margin - cost_sga - dep
+        net_inc = ebit * (1 - tax_rate)
+        ocf = net_inc + dep
+        
+        flows = [-net_inv] + [ocf] * int(period_input)
+        npv = manual_npv(target_irr, flows)
+        irr = manual_irr(flows)
+        
+        # 결과 표시
+        st.divider()
+        m1, m2, m3 = st.columns(3)
+        m1.metric("순현재가치 (NPV)", f"{npv:,.0f} 원")
+        
+        if irr is None:
+            m2.metric("내부수익률 (IRR)", "계산 불가")
+            st.caption(f"🚩 **사유**: 초기 투자비 0원 이하(자본 투입 없음) 또는 운영 적자 지속")
+        else:
+            m2.metric("내부수익률 (IRR)", f"{irr*100:.2f} %")
+        m3.metric("할인회수기간 (DPP)", "회수 불가" if npv < 0 else "계산 필요")
+
+        # 분석 사유 요약
+        st.subheader("🧐 NPV 산출 사유 분석")
+        st.markdown(f"""
+        현재 NPV가 **{npv:,.0f}원**으로 산출된 주요 원인은 다음과 같습니다:
+        
+        1. **운영 수익성 결여**: 연간 매출 마진({margin:,.0f}원)보다 판관비 합계({cost_sga:,.0f}원)가 더 커서 본원적인 영업 적자 상태입니다.
+        2. **감가상각 부담**: 총 공사비 70억 원에 대해 매년 **{dep:,.0f}원**의 감가상각비가 발생하여 비용 부담을 가중시키고 있습니다.
+        3. **현금흐름 적자 지속**: 세금 절감 효과와 감가상각비 환입을 고려하더라도, 매년 **{ocf:,.0f}원**의 **세후 수요개발 기대이익(적자)**이 발생하고 있습니다.
+        4. **미래 가치 누적**: 매년 발생하는 약 **{abs(ocf):,.0f}원**의 손실이 {period_input}년 동안 누적 및 할인되어 최종 NPV에 반영되었습니다.
+        """)
+        
+        st.subheader("🔎 세부 계산 근거")
+        st.info(f"**초기 순투자액(Year 0): {net_inv:,.0f} 원** | **세후 수요개발 기대이익(OCF): {ocf:,.0f} 원**")
+        st.line_chart(np.cumsum(flows))
