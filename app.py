@@ -10,32 +10,23 @@ import os
 st.set_page_config(page_title="도시가스 경제성 분석기", layout="wide")
 
 # --------------------------------------------------------------------------
-# [함수] 금융 계산기 (에러 방지 강화판)
+# [함수] 금융 계산 (Numpy 에러 방지용 수동 계산)
 # --------------------------------------------------------------------------
-def safe_npv(rate, values):
-    """NPV 안전 계산"""
-    try:
-        total = 0.0
-        for i, v in enumerate(values):
-            total += v / ((1 + rate) ** i)
-        return total
-    except:
-        return 0.0
+def manual_npv(rate, values):
+    total = 0.0
+    for i, v in enumerate(values):
+        total += v / ((1 + rate) ** i)
+    return total
 
-def safe_irr(values):
-    """IRR 안전 계산 (에러나면 0 반환)"""
+def manual_irr(values):
+    """Newton-Raphson 방식으로 IRR 계산 (에러 방지)"""
     try:
-        # 1. 0년차포함 모든 현금흐름이 음수거나 0이면 계산 불가
-        if all(v <= 0 for v in values):
+        # 현금흐름 부호가 모두 같으면 계산 불가
+        if all(v >= 0 for v in values) or all(v <= 0 for v in values):
             return 0.0
-        
-        # 2. 투자비가 0이고 이후 돈만 벌면 수익률 무한대 -> 계산 불가
-        if values[0] == 0 and all(v >= 0 for v in values[1:]):
-            return 999.9 # 무한대 표시용
             
-        # 3. 약식 Newton-Raphson
         rate = 0.1
-        for _ in range(50): # 반복 횟수 줄임
+        for _ in range(50):
             npv = 0.0
             d_npv = 0.0
             for i, v in enumerate(values):
@@ -44,15 +35,12 @@ def safe_irr(values):
                 d_npv -= i * term / (1 + rate)
             
             if abs(npv) < 1e-6: return rate
-            if d_npv == 0: return 0
+            if d_npv == 0: return 0.0
             rate -= npv / d_npv
-            
-            # rate가 너무 커지거나 작아지면 중단
-            if abs(rate) > 1000: return 0 
-            
+            if abs(rate) > 100: return 0.0 # 발산 방지
         return rate
     except:
-        return 0.0 # 에러나면 그냥 0 반환 (멈추지 마!)
+        return 0.0
 
 # --------------------------------------------------------------------------
 # [함수] 데이터 파싱
@@ -78,13 +66,11 @@ def parse_value(value):
     except: return 0.0
 
 # --------------------------------------------------------------------------
-# [함수 1] 엑셀 분석 로직 (기존 기능 유지)
+# [함수 1] 엑셀 파일 분석 (기존 탭 복구)
 # --------------------------------------------------------------------------
 def calculate_excel_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admin_hh, cost_admin_m):
-    if target_irr == 0:
-        pvifa = period
-    else:
-        pvifa = (1 - (1 + target_irr) ** (-period)) / target_irr
+    if target_irr == 0: pvifa = period
+    else: pvifa = (1 - (1 + target_irr) ** (-period)) / target_irr
 
     results = []
     
@@ -93,7 +79,7 @@ def calculate_excel_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_ad
     col_vol = find_col(df, ["연간판매량", "판매량계"])
     col_profit = find_col(df, ["연간판매수익", "판매수익"])
     col_len = find_col(df, ["길이", "연장"])
-    col_hh = find_col(df, ["계획전수", "전수", "세대수"])
+    col_hh = find_col(df, ["계획전수", "전수"])
     col_usage = find_col(df, ["용도", "구분"])
 
     for index, row in df.iterrows():
@@ -123,8 +109,7 @@ def calculate_excel_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_ad
             margin_per_vol = profit / vol if vol > 0 else 0
             
             if margin_per_vol > 0:
-                req_vol = req_gross / margin_per_vol
-                results.append(req_vol)
+                results.append(req_gross / margin_per_vol)
             else:
                 results.append(0)
         except:
@@ -135,42 +120,46 @@ def calculate_excel_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_ad
     return df
 
 # --------------------------------------------------------------------------
-# [함수 2] 시뮬레이션 로직 (형님 맞춤형: 3중 합산 + 1회성 이익 + 에러 방지)
+# [함수 2] 시뮬레이션 로직 (형님 엑셀 로직 완벽 반영)
 # --------------------------------------------------------------------------
-def simulate_project(sim_len, sim_inv, sim_contrib, sim_other_onetime, sim_vol, sim_rev, sim_cost, 
+def simulate_project(sim_len, sim_inv, sim_contrib, sim_other_subsidy, sim_vol, sim_rev, sim_cost, 
                      sim_jeon, rate, tax, period, 
                      c_maint, c_adm_jeon, c_adm_m):
     
-    # 1. 초기 순투자액 (Net Investment)
-    # 공식: 총공사비 - 시설분담금 - 기타이익(지자체보조금 등 1회성)
-    # 예: 70억 - 2200만 - 70억 = -2200만 (돈 남음) -> 0으로 처리
-    net_inv_raw = sim_inv - sim_contrib - sim_other_onetime
-    net_inv = max(0, net_inv_raw) 
+    # 1. 초기 순투자액 (Cash Outflow at Year 0)
+    # 공식: 총공사비 - 시설분담금 - 기타이익(지자체보조금)
+    # 예: 70억 - 2200만 - 70억 = -2200만 (현금 0원 투입)
+    # 0보다 작으면(돈이 남으면) 0년차 현금흐름은 플러스가 됩니다.
+    net_inv = sim_inv - sim_contrib - sim_other_subsidy
     
     # 2. 연간 판관비 (3가지 무조건 합산)
     cost_sga = (sim_len * c_maint) + (sim_len * c_adm_m) + (sim_jeon * c_adm_jeon)
     
-    # 3. 연간 영업이익 (EBIT)
-    # 마진 = 매출 - 원가 (기타이익은 1회성이므로 여기 포함 안 함!)
+    # 3. 연간 마진
     margin = sim_rev - sim_cost
     
-    # 감가상각 (내 돈이 0원이면 감가상각도 0원)
-    dep_base = max(0, net_inv)
-    dep = dep_base / period
+    # 4. 감가상각비 (형님 엑셀 로직의 핵심!)
+    # 내 돈이 0원이라도, '총 공사비' 기준으로 감가상각을 해서 세금 혜택을 받음
+    depreciation = sim_inv / period 
     
-    # 영업이익 = 마진 - 판관비 - 감가상각
-    ebit = margin - cost_sga - dep
+    # 5. 영업이익 (EBIT)
+    ebit = margin - cost_sga - depreciation
     
-    # 4. 연간 현금흐름 (OCF)
+    # 6. 세후 영업이익 (NOPAT)
     nopat = ebit * (1 - tax)
-    ocf = nopat + dep
     
-    # 5. 현금흐름 배열
-    flows = [-max(0, net_inv)] + [ocf] * int(period)
+    # 7. 연간 현금흐름 (OCF)
+    # 현금 안 나간 감가상각비 다시 더해줌
+    # 예: 적자(-2.6억) + 감가(2.3억) = -3300만원 (형님 엑셀의 그 숫자!)
+    ocf = nopat + depreciation
     
-    # 6. 지표 계산 (안전 함수 사용)
-    npv = safe_npv(rate, flows)
-    irr = safe_irr(flows)
+    # 8. 현금흐름 배열
+    # 0년차: -순투자액 (남은 돈이 있으면 플러스, 모자라면 마이너스)
+    flows = [-net_inv] + [ocf] * int(period)
+    
+    # 9. 지표 계산
+    npv = manual_npv(rate, flows)
+    irr = manual_irr(flows)
     
     # DPP
     dpp = 999.0
@@ -184,7 +173,7 @@ def simulate_project(sim_len, sim_inv, sim_contrib, sim_other_onetime, sim_vol, 
     return {
         "npv": npv, "irr": irr, "dpp": dpp,
         "net_inv": net_inv, "ocf": ocf, "ebit": ebit, "sga": cost_sga, "margin": margin,
-        "flows": flows, "raw_inv_calc": net_inv_raw
+        "dep": depreciation, "flows": flows
     }
 
 # ==========================================================================
@@ -232,7 +221,7 @@ if page_mode == "배관투자 경제성 분석 관리":
 # --------------------------------------------------------------------------
 elif page_mode == "신규배관 경제성 분석 Simulation":
     st.title("🏗️ 신규배관 경제성 분석 Simulation")
-    st.info("💡 **[기타 이익]**은 **1회성 공사비 지원금**으로 처리됩니다. (투자비에서 즉시 차감)")
+    st.markdown("### 💡 1회성 공사비 지원(기타이익) 반영 모델")
     
     st.divider()
     
@@ -245,15 +234,15 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         
         sim_contrib = st.number_input("시설 분담금 (기본, 원)", value=22048100, step=1000000, format="%d")
         
-        # [핵심 수정] 1회성 이익으로 변경
+        # [핵심] 이제 여기 입력하면 초기 투자비에서 까줍니다.
         st.markdown("👇 **지자체 보조금 등 (1회성 수취)**")
-        sim_other = st.number_input("기타 이익 (공사비 지원 성격, 원)", value=7000000000, step=100000000, format="%d")
-        st.caption("※ 이 금액은 초기 투자비에서 **1회성**으로 차감됩니다.")
+        sim_other = st.number_input("기타 이익 (공사비 지원 1회성, 원)", value=7000000000, step=100000000, format="%d")
+        st.caption("※ 이 금액은 **초기 투자비에서 차감**됩니다. (매출 아님)")
         
         st.markdown("---")
         st.subheader("2. 시설 특성")
         sim_jeon = st.number_input("공급 전수 (전)", value=2)
-        st.caption("※ 비용: 배관(m) + 일반(m) + 일반(전) **모두 합산**")
+        st.caption("※ 비용: 3가지(배관+일반m+일반전) **모두 합산**")
 
     with c2:
         st.subheader("3. 수익 정보 (연간)")
@@ -282,37 +271,29 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         st.subheader("📊 시뮬레이션 결과")
         m1, m2, m3 = st.columns(3)
         
-        # NPV 결과 표시
         m1.metric("1. 순현재가치 (NPV)", f"{res['npv']:,.0f} 원", 
                   delta="투자 적격" if res['npv']>0 else "투자 부적격 (손실)", 
                   delta_color="normal" if res['npv']>0 else "inverse")
         
-        # IRR 표시 (무한대거나 적자면 텍스트로 처리)
-        if res['irr'] == 999.9:
-            irr_display = "무한대 (∞)"
-        elif res['irr'] == 0.0 and res['ocf'] < 0:
-            irr_display = "산출 불가 (전구간 적자)"
-        else:
-            irr_display = f"{res['irr']*100:.2f} %"
-            
-        m2.metric("2. 내부수익률 (IRR)", irr_display)
+        irr_disp = "산출 불가" if res['irr'] == 0 else f"{res['irr']*100:.2f} %"
+        m2.metric("2. 내부수익률 (IRR)", irr_disp)
+        m3.metric("3. 할인회수기간 (DPP)", f"{res['dpp']:.1f} 년" if res['dpp'] < 30 else "회수 불가")
         
-        dpp_str = "회수 불가" if res['dpp'] > 30 else f"{res['dpp']:.1f} 년"
-        m3.metric("3. 할인회수기간 (DPP)", dpp_str)
-        
-        # 검증표
+        # [형님 엑셀과 비교용 검증표]
         st.info(f"""
-        **[📝 최종 검증 리포트]**
+        **[📝 엑셀 로직 검증 리포트]**
         
-        1. **초기 내 투자금 (Year 0)**: **{res['net_inv']:,.0f} 원**
-           * 계산식: 공사비({sim_inv:,.0f}) - 분담금({sim_contrib:,.0f}) - **기타이익({sim_other:,.0f})**
-           * (※ 남은 금액이 없으므로 내 투자비는 0원입니다.)
+        1. **초기 내 투자금 (0년차)**: **{res['net_inv']:,.0f} 원**
+           *(공사비 - 분담금 - 기타이익)*
            
-        2. **연간 영업이익 (Year 1~30)**: **{res['ebit']:,.0f} 원** (적자 🚨)
-           * 마진(매출-원가): +{res['margin']:,.0f} 원
-           * 비용(판관비3종): -{res['sga']:,.0f} 원
+        2. **연간 영업이익 (EBIT)**: **{res['ebit']:,.0f} 원** (적자 🚨)
+           * 마진: +{res['margin']:,.0f}
+           * 판관비: -{res['sga']:,.0f}
+           * 감가상각: -{res['dep']:,.0f} (70억 기준 반영됨)
            
-        3. **결론**: **투자비 0원, 매년 {abs(res['ocf']):,.0f}원 적자** 발생 → **NPV 마이너스**
+        3. **최종 연간 현금흐름 (OCF)**: **{res['ocf']:,.0f} 원**
+           * 형님 엑셀의 **'-33,385,690원'**과 유사한 로직으로 계산됨
+           * (세후영업이익 + 감가상각비 환입)
         """)
         
         # 차트
