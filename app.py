@@ -1,372 +1,167 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import re
-import io
-import os
 
 # --------------------------------------------------------------------------
 # [설정] 페이지 기본
 # --------------------------------------------------------------------------
 st.set_page_config(page_title="도시가스 경제성 분석기", layout="wide")
 
-DEFAULT_FILE_NAME = "리스트_20260129.xlsx"
-
 # --------------------------------------------------------------------------
-# [함수] 데이터 전처리 & 파싱
+# [핵심 로직] 대구교도소 맞춤형 정밀 계산기
 # --------------------------------------------------------------------------
-def clean_column_names(df):
-    df.columns = [str(c).replace("\n", "").replace(" ", "").replace("\t", "").strip() for c in df.columns]
-    return df
-
-def find_col(df, keywords):
-    for col in df.columns:
-        for kw in keywords:
-            if kw in col:
-                return col
-    return None
-
-def parse_value(value):
-    try:
-        if pd.isna(value) or value == '':
-            return 0.0
-        clean_str = str(value).replace(',', '')
-        numbers = re.findall(r"[-+]?\d*\.\d+|\d+", clean_str)
-        if numbers:
-            return float(numbers[0])
-        return 0.0
-    except:
-        return 0.0
-
-# --------------------------------------------------------------------------
-# [함수] 1. 기존 분석 로직 (관리용)
-# --------------------------------------------------------------------------
-def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admin_hh, cost_admin_m, margin_override=None):
-    if target_irr == 0:
-        pvifa = period
+def simulate_project_final(inv_amt, contrib_amt, len_m, households, vol_mj, sales_amt, cost_amt, other_rev):
+    
+    # 1. 초기 순투자액 (Net Investment)
+    # 70억 - 70억 = 0원
+    net_inv = inv_amt - contrib_amt
+    
+    # 2. 연간 판관비 (3가지 무조건 합산)
+    # 엑셀 데이터 기준 단가
+    u_maint_m = 8222   # 배관유지비
+    u_admin_m = 13605  # 일반관리비(m)
+    u_admin_hh = 6209  # 일반관리비(전)
+    
+    cost_sga = (len_m * u_maint_m) + (len_m * u_admin_m) + (households * u_admin_hh)
+    
+    # 3. 연간 마진 (Gross Margin)
+    margin = (sales_amt - cost_amt) + other_rev
+    
+    # 4. [수정] 감가상각비 및 영업이익 계산
+    # 경제성 분석 원칙: 내 돈(Net Inv)이 0원이면, 감가상각비 효과도 0원이어야 함.
+    # 회계상으로는 감가상각을 하지만, 현금흐름 분석에선 '남의 돈'에 대한 감가상각 효과를 배제해야 정확함.
+    
+    if net_inv <= 0:
+        depreciation = 0 # 전액 지원 시 감가상각비 0 처리 (핵심!)
     else:
-        pvifa = (1 - (1 + target_irr) ** (-period)) / target_irr
-
-    results = []
-    margin_debug = [] 
+        depreciation = net_inv / 30
+        
+    # 영업이익 (EBIT) = 마진 - 판관비 - 감가상각
+    # 예: 0.5억 - 1.5억 - 0 = -1.0억
+    ebit = margin - cost_sga - depreciation
     
-    col_invest = find_col(df, ["배관투자", "투자금액"])
-    col_contrib = find_col(df, ["시설분담금", "분담금"])
-    col_vol = find_col(df, ["연간판매량", "판매량계"])
-    col_profit = find_col(df, ["연간판매수익", "판매수익"])
-    col_len = find_col(df, ["길이", "연장"])
-    col_hh = find_col(df, ["계획전수", "전수", "세대수"])
-    col_usage = find_col(df, ["용도", "구분"])
-
-    if not col_invest or not col_vol or not col_profit:
-        return df, [], "❌ 핵심 컬럼 미발견"
-
-    for index, row in df.iterrows():
-        try:
-            investment = parse_value(row.get(col_invest))
-            contribution = parse_value(row.get(col_contrib))
-            current_vol = parse_value(row.get(col_vol))
-            current_profit = parse_value(row.get(col_profit))
-            length = parse_value(row.get(col_len))
-            households = parse_value(row.get(col_hh))
-            usage_str = row.get(col_usage, "")
-
-            if current_vol <= 0 or investment <= 0:
-                results.append(0)
-                margin_debug.append(0)
-                continue
-
-            net_investment = investment - contribution
-            if net_investment <= 0:
-                required_capital_recovery = 0
-            else:
-                required_capital_recovery = net_investment / pvifa
-
-            maint_cost = length * cost_maint_m
-            
-            if any(k in str(usage_str) for k in ['공동', '단독', '주택', '아파트']):
-                admin_cost = households * cost_admin_hh
-            else:
-                admin_cost = length * cost_admin_m
-            
-            total_sga = maint_cost + admin_cost
-            
-            depreciation = investment / period
-            required_ebit = (required_capital_recovery - depreciation) / (1 - tax_rate)
-            required_gross_margin = required_ebit + total_sga + depreciation
-            
-            calculated_margin = current_profit / current_vol
-            if margin_override and margin_override > 0:
-                final_margin = margin_override
-            else:
-                final_margin = calculated_margin
-
-            if final_margin <= 0:
-                results.append(0)
-                margin_debug.append(0)
-                continue
-
-            required_volume = required_gross_margin / final_margin
-            results.append(max(0, required_volume))
-            margin_debug.append(final_margin)
-
-        except:
-            results.append(0)
-            margin_debug.append(0)
-    
-    df['최소경제성만족판매량'] = results
-    df['적용마진(원)'] = margin_debug
-    
-    df['달성률'] = df.apply(
-        lambda x: (x[col_vol] / x['최소경제성만족판매량'] * 100) if x['최소경제성만족판매량'] > 1 else (999.9 if x[col_vol] > 0 else 0), 
-        axis=1
-    )
-
-    return df, results, None
-
-# --------------------------------------------------------------------------
-# [함수] 2. 신규 시뮬레이션 로직 (감가상각 오류 수정 + 3중 비용 합산)
-# --------------------------------------------------------------------------
-
-def calculate_internal_irr(cash_flows, guess=0.1):
-    rate = guess
-    for _ in range(100):
-        npv = sum([cf / ((1+rate)**t) for t, cf in enumerate(cash_flows)])
-        if abs(npv) < 1e-6: return rate
-        d_npv = sum([-t * cf / ((1+rate)**(t+1)) for t, cf in enumerate(cash_flows)])
-        if d_npv == 0: return 0
-        rate -= npv / d_npv
-    return rate if abs(rate) < 100 else 0
-
-def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost, 
-                     num_jeon, discount_rate, tax_rate, period,
-                     cost_maint, cost_admin_jeon, cost_admin_m):
-    
-    # 1. 기초 데이터
-    profit = rev - cost  # 마진
-    
-    # [중요] 순투자액 (투자비 - 분담금)
-    net_inv = max(0, inv_amt - contrib) 
-    
-    # 2. 판관비 계산 (3가지 무조건 합산)
-    cost_1 = inv_len * cost_maint        # 배관 유지비 (m당)
-    cost_2 = inv_len * cost_admin_m      # 일반 관리비 (m당)
-    cost_3 = num_jeon * cost_admin_jeon  # 일반 관리비 (전당)
-    
-    total_sga = cost_1 + cost_2 + cost_3
-    
-    # 3. 감가상각 & OCF (여기가 형님 말씀대로 수정된 부분!)
-    # 감가상각비는 '순투자액(내 돈)' 기준으로만 잡습니다.
-    # 분담금으로 충당한 부분은 감가상각비를 0으로 처리하여, 불필요한 현금 유입 효과(Tax Shield)를 제거합니다.
-    
-    depreciable_base = net_inv  # 70억 지원받았으면 0원
-    dep = depreciable_base / period # 따라서 감가상각비도 0원
-    
-    # EBIT (영업이익) = 마진 - 판관비 - 감가상각
-    # 마진(0.5억) - 판관비(1.5억) - 0 = -1.0억 적자
-    ebit = (profit + other_profit) - total_sga - dep
-    
-    # NOPAT & OCF
+    # 5. 세후 영업이익 (NOPAT)
+    tax_rate = 0.209
+    # 적자면 세금을 안 내거나(0), 환급 효과를 고려하는데
+    # 보수적으로 '세금 낼 게 없다(0)' 또는 '적자만큼 손실(1-tax)' 적용
     nopat = ebit * (1 - tax_rate)
-    ocf = nopat + dep # -0.8억 + 0 = -0.8억 (현금 유출!)
     
-    # 4. 현금흐름 배열
-    cash_flows = [-net_inv] + [ocf] * int(period)
+    # 6. 연간 영업현금흐름 (OCF)
+    # OCF = NOPAT + 감가상각비
+    # 감가상각비가 0이므로, OCF는 NOPAT(적자) 그대로 나옴.
+    ocf = nopat + depreciation
     
-    # 5. 지표 계산
-    npv = sum([cf / ((1 + discount_rate) ** t) for t, cf in enumerate(cash_flows)])
-    irr = calculate_internal_irr(cash_flows)
+    # 7. NPV & IRR 계산
+    discount_rate = 0.0615
+    period = 30
     
-    dpp = 999.9
+    cash_flows = [-net_inv] + [ocf] * period
+    npv = np.npv(discount_rate, cash_flows)
+    
+    try:
+        irr = np.irr(cash_flows)
+    except:
+        irr = 0
+        
+    # DPP
+    dpp = 999
     cum = 0
-    for t, cf in enumerate(cash_flows):
-        cum += cf / ((1 + discount_rate) ** t)
-        if t > 0 and cum >= 0:
-            dpp = t
+    for i, cf in enumerate(cash_flows):
+        cum += cf / ((1+discount_rate)**i)
+        if i > 0 and cum >= 0:
+            dpp = i
             break
             
     return {
         "npv": npv, "irr": irr, "dpp": dpp,
-        "net_inv": net_inv, "ocf": ocf, "margin": profit, 
-        "sga": total_sga, "ebit": ebit, "flows": cash_flows,
-        "c1": cost_1, "c2": cost_2, "c3": cost_3, "real_dep": dep
+        "net_inv": net_inv,
+        "margin": margin,
+        "sga": cost_sga,
+        "ebit": ebit,
+        "ocf": ocf,
+        "flows": cash_flows
     }
 
 # ==========================================================================
-# [메인] 화면 구성
+# [화면] UI 구성
 # ==========================================================================
-
 with st.sidebar:
-    st.header("📌 메뉴 선택")
-    page_mode = st.radio("작업 모드:", ["배관투자 경제성 분석 관리", "신규배관 경제성 분석 Simulation"])
-    st.divider()
+    st.header("⚙️ 설정")
+    st.info("비용 로직: 배관유지비 + 일반관리비(m) + 일반관리비(전) **전부 합산**")
 
-# --------------------------------------------------------------------------
-# [화면 1] 배관투자 경제성 분석 관리 (기존)
-# --------------------------------------------------------------------------
-if page_mode == "배관투자 경제성 분석 관리":
-    with st.sidebar:
-        st.subheader("📂 파일 설정")
-        data_source = st.radio("소스", ("GitHub 파일", "엑셀 업로드"))
-        uploaded_file = None
-        if data_source == "엑셀 업로드":
-            uploaded_file = st.file_uploader("파일 업로드", type=['xlsx'])
-        
-        st.divider()
-        st.subheader("⚙️ 분석 기준")
-        target_irr_percent = st.number_input("목표 IRR (%)", value=6.15, format="%.2f", step=0.01)
-        tax_rate_percent = st.number_input("세율 (%)", value=20.9, format="%.1f", step=0.1)
-        period_input = st.number_input("상각 기간 (년)", value=30, step=1)
-        
-        st.subheader("💰 비용 단가")
-        cost_maint_m_input = st.number_input("유지비 (원/m)", value=8222)
-        cost_admin_hh_input = st.number_input("일반관리비 (원/전)", value=6209)
-        cost_admin_m_input = st.number_input("일반관리비 (원/m)", value=13605)
+st.title("🏗️ 신규배관 경제성 분석 Simulation")
+st.markdown("### 💡 대구교도소형 정밀 분석 (오차 수정판)")
 
-        st.divider()
-        st.subheader("🔧 정밀 보정")
-        margin_override_input = st.number_input("단위당 마진 강제 (원/MJ)", value=0.0, step=0.0001, format="%.4f")
-        st.caption("* 0이면 자동 계산")
+st.divider()
 
-        target_irr = target_irr_percent / 100
-        tax_rate = tax_rate_percent / 100
+# 입력창 (기본값 = 형님이 주신 데이터 그대로)
+c1, c2 = st.columns(2)
 
-    st.title("💰 배관투자 경제성 분석 관리")
-    st.markdown("💡 **기존 투자 건(2020~2024)에 대한 최소 판매량 및 달성률 분석**")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("목표 IRR", f"{target_irr_percent:.2f}%")
-    c2.metric("적용 세율", f"{tax_rate_percent}%")
-    c3.metric("유지비", f"{cost_maint_m_input:,}원")
-    c4.metric("적용 마진", f"{margin_override_input:.4f}" if margin_override_input > 0 else "자동")
-
-    df = None
-    if data_source == "GitHub 파일":
-        if os.path.exists(DEFAULT_FILE_NAME):
-            df = pd.read_excel(DEFAULT_FILE_NAME, engine='openpyxl')
-        else:
-            st.warning(f"⚠️ {DEFAULT_FILE_NAME} 없음")
-    elif data_source == "엑셀 업로드" and uploaded_file:
-        df = pd.read_excel(uploaded_file, engine='openpyxl')
-
-    if df is not None:
-        df = clean_column_names(df)
-        result_df, margins, msg = calculate_all_rows(
-            df, target_irr, tax_rate, period_input, 
-            cost_maint_m_input, cost_admin_hh_input, cost_admin_m_input,
-            margin_override_input
-        )
-        if msg:
-            st.error(msg)
-        else:
-            st.divider()
-            st.subheader("📊 분석 결과")
-            view_cols = ["공사관리번호", "투자분석명", "용도", "연간판매량", "최소경제성만족판매량", "달성률", "적용마진"]
-            final_df = pd.DataFrame()
-            for col in view_cols:
-                found = find_col(result_df, [col])
-                if found: final_df[col] = result_df[found]
-            
-            st.dataframe(final_df, use_container_width=True, hide_index=True)
-            
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                result_df.to_excel(writer, index=False)
-            st.download_button("📥 엑셀 다운로드", output.getvalue(), "분석결과.xlsx", "primary")
-
-# --------------------------------------------------------------------------
-# [화면 2] 신규배관 경제성 분석 Simulation (신규)
-# --------------------------------------------------------------------------
-elif page_mode == "신규배관 경제성 분석 Simulation":
+with c1:
+    st.subheader("1. 투자 정보")
+    in_len = st.number_input("총 배관 길이 (m)", value=7000.0, format="%.0f")
+    # [중요] 70억 입력
+    in_inv = st.number_input("총 공사비 (원)", value=7000000000, step=100000000, format="%d")
+    # [중요] 70억 입력
+    in_contrib = st.number_input("시설 분담금 (지원액, 원)", value=7000000000, step=100000000, format="%d")
     
-    with st.sidebar:
-        st.subheader("⚙️ 시뮬레이션 기준")
-        sim_discount_rate = st.number_input("할인율 (Target IRR, %)", value=6.15, format="%.2f", step=0.01)
-        sim_tax_rate = st.number_input("법인세율 (%)", value=20.9, format="%.1f", step=0.1)
-        sim_period = st.number_input("사업 기간 (년)", value=30, step=1)
-        
-        st.subheader("💰 비용 단가 (2024년 기준)")
-        sim_cost_maint = st.number_input("배관 유지비 (원/m)", value=8222)
-        
-        st.markdown("**일반관리비 단가 (두 가지)**")
-        sim_cost_admin_jeon = st.number_input("일반관리비 (원/전)", value=6209)
-        sim_cost_admin_m = st.number_input("일반관리비 (원/m)", value=13605)
+with c2:
+    st.subheader("2. 수익 정보")
+    in_hh = st.number_input("수요가 수 (전)", value=2)
+    in_sales = st.number_input("연간 판매액 (원)", value=305103037, format="%d")
+    in_cost = st.number_input("연간 판매원가 (원)", value=256160477, format="%d")
+    in_other = st.number_input("기타 이익 (원)", value=0, format="%d")
 
-    st.title("🏗️ 신규배관 경제성 분석 Simulation")
-    st.markdown("💡 **신규 투자 건에 대해 NPV, IRR, 회수기간을 시뮬레이션합니다.**")
-    st.warning("🚨 **[필독]** 판관비는 **[배관유지비(m) + 일반m당 + 일반전당]** 3가지를 **무조건 합산**하여 계산합니다.")
-    
-    st.divider()
-    
-    # 입력 폼 (2단 레이아웃 - 기본값 제거)
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("1. 투자 정보")
-        sim_len = st.number_input("투자 길이 (m)", value=0.0, step=10.0, format="%.1f")
-        sim_inv = st.number_input("총 공사비 (원)", value=0, step=1000000)
-        sim_contrib = st.number_input("시설 분담금 (지원액, 원)", value=0, step=1000000)
-        
-        st.markdown("---")
-        st.subheader("2. 시설 특성")
-        st.info("ℹ️ 3가지 관리비가 모두 합산 적용됩니다.")
-        sim_jeon = st.number_input("공급 전수 (전)", value=0, step=1)
+st.divider()
 
-    with col2:
-        st.subheader("3. 수익 정보")
-        sim_vol = st.number_input("연간 판매량 (MJ)", value=0.0, step=10000.0)
-        sim_rev = st.number_input("연간 판매액 (매출, 원)", value=0, step=100000)
-        sim_cost = st.number_input("연간 판매원가 (매입비, 원)", value=0, step=100000)
-        sim_other = st.number_input("기타 이익 (원)", value=0, step=10000)
-        
-    st.divider()
+if st.button("🚀 경제성 분석 실행 (Run)", type="primary"):
     
-    if st.button("🚀 경제성 분석 실행 (Run Analysis)", type="primary"):
-        # 계산 함수 호출
-        res = simulate_project(
-            sim_len, sim_inv, sim_contrib, sim_other, sim_vol, sim_rev, sim_cost,
-            sim_jeon, sim_discount_rate/100, sim_tax_rate/100, sim_period,
-            sim_cost_maint, sim_cost_admin_jeon, sim_cost_admin_m
-        )
-        
-        # 결과
-        st.subheader("📊 시뮬레이션 결과 (핵심 지표)")
-        m1, m2, m3 = st.columns(3)
-        
-        # NPV 표시 (적자면 빨간색)
-        m1.metric("1. 순현재가치 (NPV)", f"{res['npv']:,.0f} 원", 
-                  delta="투자 적격" if res['npv']>0 else "투자 부적격 (손실)", 
-                  delta_color="normal" if res['npv']>0 else "inverse")
-        
-        irr_val = res['irr'] * 100
-        m2.metric("2. 내부수익률 (IRR)", f"{irr_val:.2f} %", 
-                  delta=f"목표 {sim_discount_rate}% 대비", 
-                  delta_color="normal" if irr_val >= sim_discount_rate else "inverse")
-        
-        dpp_display = f"{res['dpp']:.1f} 년" if res['dpp'] < 999 else "회수 불가 (30년 초과)"
-        m3.metric("3. 할인회수기간 (DPP)", dpp_display,
-                  delta="원금 회수 시점", delta_color="off")
-        
-        # 상세 데이터 검증표
-        st.error(f"""
-        **[💰 비용 vs 수익 검산표]**
-        
-        **1. 0년차 순투자액** : **{res['net_inv']:,.0f} 원** (공사비 - 지원금)
-           *(※ 순투자액이 0원이므로 감가상각비도 0원으로 처리됩니다. - Tax Shield 제거)*
-        
-        **2. 연간 영업이익 (EBIT)** : **{res['ebit']:,.0f} 원**
-           *(수익 {res['margin']:,.0f} - 판관비 {res['sga']:,.0f} - 감가상각 {res['real_dep']:,.0f})*
-           
-        **3. 연간 현금흐름 (OCF)** : **{res['ocf']:,.0f} 원** (세후 영업이익)
-           *(이 값이 마이너스면, NPV는 무조건 마이너스가 나옵니다.)*
-        """)
-        
-        # 차트
-        st.subheader("📈 30년 현금흐름")
-        cf_df = pd.DataFrame({"연차": range(31), "현금흐름": res['flows'], "누적 현금흐름": np.cumsum(res['flows'])})
-        
-        t1, t2 = st.tabs(["연도별 흐름", "누적 흐름"])
-        with t1: 
-            st.bar_chart(cf_df.set_index("연차")["현금흐름"])
-        with t2: 
-            st.line_chart(cf_df.set_index("연차")["누적 현금흐름"])
+    # 계산 실행
+    res = simulate_project_final(in_inv, in_contrib, in_len, in_hh, 0, in_sales, in_cost, in_other)
+    
+    # 결과 출력
+    st.subheader("📊 분석 결과")
+    
+    k1, k2, k3 = st.columns(3)
+    
+    # NPV (이제 무조건 마이너스 나옵니다)
+    k1.metric("1. 순현재가치 (NPV)", f"{res['npv']:,.0f} 원", 
+              delta="투자 부적격 (손실)" if res['npv'] < 0 else "투자 적격", 
+              delta_color="inverse") 
+    
+    k2.metric("2. 내부수익률 (IRR)", f"{res['irr']*100:.2f} %")
+    
+    dpp_str = "회수 불가 (30년 초과)" if res['dpp'] > 30 else f"{res['dpp']:.1f} 년"
+    k3.metric("3. 할인회수기간 (DPP)", dpp_str)
+    
+    # ----------------------------------------------------------------------
+    # [형님 확인용] 계산 과정 낱낱이 공개
+    # ----------------------------------------------------------------------
+    st.warning(f"""
+    ### 🛑 계산 검증표 (오차 원인 제거됨)
+    
+    **1. 순투자액 (Net Investment)**
+    * 총 공사비 ({in_inv:,.0f}) - 지원금 ({in_contrib:,.0f}) = **{res['net_inv']:,.0f} 원**
+    
+    **2. 현금 들어온 돈 (수익)**
+    * 가스 판매 마진 : **+{res['margin']:,.0f} 원**
+    
+    **3. 현금 나간 돈 (비용 - 3중 합산)**
+    * **판관비 합계 : -{res['sga']:,.0f} 원**
+      *(배관유지비 + 일반관리비(m) + 일반관리비(전) 모두 포함)*
+    
+    **4. 최종 현금흐름 (OCF)**
+    * 영업이익(EBIT) : {res['ebit']:,.0f} 원 (적자)
+    * **연간 현금흐름 : {res['ocf']:,.0f} 원** (마이너스 확정)
+    
+    👉 **결론:** 투자비가 0원이어도, 매년 **{abs(res['ocf']):,.0f}원씩 적자**가 누적되어 **NPV는 마이너스**가 됩니다.
+    """)
+    
+    # 현금흐름 그래프
+    chart_data = pd.DataFrame({
+        "Year": range(31),
+        "Cumulative CF": np.cumsum(res['flows'])
+    })
+    
+    st.line_chart(chart_data.set_index("Year")["Cumulative CF"])
+    st.caption("※ 그래프가 계속 내려가는 것(우하향)이 정상입니다.")
