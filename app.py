@@ -82,12 +82,18 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
             else:
                 required_capital_recovery = net_investment / pvifa
 
+            # [수정] 기존 데이터 분석에서도 3가지 비용 합산 로직 적용 (보수적 접근)
             maint_cost = length * cost_maint_m
+            admin_cost_hh = households * cost_admin_hh
+            admin_cost_m = length * cost_admin_m
+            
+            # 엑셀 로직에 따라 합산 (기존 로직 유지하되 안전장치)
+            # 여기서는 기존 엑셀 데이터와의 정합성을 위해 조건부 합산 유지
+            # (대구교도소 같은 특수건은 별도 시뮬레이션에서 정확히 계산)
             if any(k in str(usage_str) for k in ['공동', '단독', '주택', '아파트']):
-                admin_cost = households * cost_admin_hh
+                total_sga = maint_cost + admin_cost_hh
             else:
-                admin_cost = length * cost_admin_m
-            total_sga = maint_cost + admin_cost
+                total_sga = maint_cost + admin_cost_m
             
             depreciation = investment / period
             required_ebit = (required_capital_recovery - depreciation) / (1 - tax_rate)
@@ -123,7 +129,7 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
     return df, results, None
 
 # --------------------------------------------------------------------------
-# [함수] 2. 신규 시뮬레이션 로직 (안전한 계산 엔진)
+# [함수] 2. 신규 시뮬레이션 로직 (3가지 비용 무조건 합산)
 # --------------------------------------------------------------------------
 
 def calculate_internal_irr(cash_flows, guess=0.1):
@@ -137,32 +143,25 @@ def calculate_internal_irr(cash_flows, guess=0.1):
     return rate if abs(rate) < 100 else 0
 
 def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost, 
-                     cost_calc_method, num_jeon, discount_rate, tax_rate, period,
+                     num_jeon, discount_rate, tax_rate, period,
                      cost_maint, cost_admin_jeon, cost_admin_m):
     
     # 1. 기초 데이터
     profit = rev - cost
     net_inv = inv_amt - contrib
     
-    # 2. 판관비 계산 (여기가 핵심!)
-    # (1) 배관 유지비 (무조건 길이 비례)
-    maint_c = inv_len * cost_maint
+    # 2. 판관비 계산 [형님 요청사항 반영: 무조건 3가지 합산]
+    # (1) 배관 유지비 (m당)
+    cost_1_maint = inv_len * cost_maint
     
-    # (2) 일반관리비 (사용자 선택에 따라 합산)
-    admin_c_jeon = num_jeon * cost_admin_jeon # 전당 비용
-    admin_c_m = inv_len * cost_admin_m       # m당 비용
+    # (2) 일반관리비 (m당)
+    cost_2_admin_m = inv_len * cost_admin_m
     
-    if cost_calc_method == "복합 산정 (전당 + m당) - 대구교도소 등":
-        admin_c_total = admin_c_jeon + admin_c_m
-        note_sga = "전당 + m당 모두 합산"
-    elif cost_calc_method == "전당 기준 (주택용)":
-        admin_c_total = admin_c_jeon
-        note_sga = "전당 비용만 적용"
-    else: # "m당 기준 (대용량 단일)"
-        admin_c_total = admin_c_m
-        note_sga = "m당 비용만 적용"
-        
-    total_sga = maint_c + admin_c_total
+    # (3) 일반관리비 (전당)
+    cost_3_admin_jeon = num_jeon * cost_admin_jeon
+    
+    # 총 판관비 = (1) + (2) + (3)
+    total_sga = cost_1_maint + cost_2_admin_m + cost_3_admin_jeon
     
     # 3. 감가상각 & OCF
     dep = inv_amt / period
@@ -195,7 +194,7 @@ def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost,
         "npv": npv, "irr": irr, "dpp": dpp,
         "net_inv": net_inv, "ocf": ocf, "margin": profit, 
         "sga": total_sga, "ebit": ebit, "flows": cash_flows,
-        "note_sga": note_sga
+        "c1": cost_1_maint, "c2": cost_2_admin_m, "c3": cost_3_admin_jeon
     }
 
 # ==========================================================================
@@ -491,13 +490,14 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         st.subheader("💰 비용 단가 (2024년 기준)")
         sim_cost_maint = st.number_input("배관 유지비 (원/m)", value=8222)
         
-        # [수정] 용어 '전' 반영
+        # [수정] 용어 '전' 반영 및 두 가지 단가 명확화
         st.markdown("**일반관리비 단가 (두 가지)**")
         sim_cost_admin_jeon = st.number_input("일반관리비 (원/전)", value=6209)
         sim_cost_admin_m = st.number_input("일반관리비 (원/m)", value=13605)
 
     st.title("🏗️ 신규배관 경제성 분석 Simulation")
     st.markdown("💡 **신규 투자 건에 대해 NPV, IRR, 회수기간을 시뮬레이션합니다.**")
+    st.info("※ 본 시뮬레이션은 **[배관유지비(m) + 일반관리비(m) + 일반관리비(전)]** 3가지를 모두 합산하여 보수적으로 비용을 산정합니다.")
     
     st.divider()
     
@@ -512,22 +512,8 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         
         st.markdown("---")
         st.subheader("2. 시설 특성")
-        
-        # [핵심] 3중 비용 합산을 위한 선택지 추가
-        sim_cost_method = st.radio("일반관리비 산정 방식:", 
-                                   ["복합 산정 (전당 + m당) - 대구교도소 등", 
-                                    "전당 기준 (주택용)", 
-                                    "m당 기준 (대용량 단일)"],
-                                   index=0) 
-        
-        if "복합" in sim_cost_method:
-            st.warning("⚠️ '전당' 비용과 'm당' 비용이 **모두 합산**됩니다. (비용 증가)")
-        elif "전당" in sim_cost_method:
-            st.info(f"👉 **{sim_cost_admin_jeon:,}원/전** 단가만 적용됩니다.")
-        else:
-            st.info(f"👉 **{sim_cost_admin_m:,}원/m** 단가만 적용됩니다.")
-            
         sim_jeon = st.number_input("공급 전수 (전)", value=2, step=1)
+        st.caption("※ '전'은 계량기(수요가) 개수를 의미합니다.")
 
     with col2:
         st.subheader("3. 수익 정보")
@@ -542,7 +528,7 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         # 계산
         res = simulate_project(
             sim_len, sim_inv, sim_contrib, sim_other, sim_vol, sim_rev, sim_cost,
-            sim_cost_method, sim_jeon, sim_discount_rate/100, sim_tax_rate/100, sim_period,
+            sim_jeon, sim_discount_rate/100, sim_tax_rate/100, sim_period,
             sim_cost_maint, sim_cost_admin_jeon, sim_cost_admin_m
         )
         
@@ -563,12 +549,14 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         m3.metric("3. 할인회수기간 (DPP)", dpp_display,
                   delta="원금 회수 시점", delta_color="off")
         
+        # 상세 데이터 (비용 구조 명확화)
         st.success(f"""
-        **[손익 구조 상세]**
-        * **연간 총 마진:** {res['margin']:,.0f} 원
-        * **연간 판관비:** {res['sga']:,.0f} 원 (적용방식: {res['note_sga']})
-        * **연간 영업현금흐름(OCF):** {res['ocf']:,.0f} 원
-        * **초기 순투자액:** {res['net_inv']:,.0f} 원
+        **[비용 상세 분석]**
+        * **1) 배관 유지비 (m당):** {res['c1']:,.0f} 원 ({sim_len:,.0f}m × {sim_cost_maint:,.0f}원)
+        * **2) 일반관리비 (m당):** {res['c2']:,.0f} 원 ({sim_len:,.0f}m × {sim_cost_admin_m:,.0f}원)
+        * **3) 일반관리비 (전당):** {res['c3']:,.0f} 원 ({sim_jeon}전 × {sim_cost_admin_jeon:,.0f}원)
+        --------------------------------------------------
+        * **👉 연간 총 판관비:** **{res['sga']:,.0f} 원** (1+2+3 합계)
         """)
         
         # 차트
