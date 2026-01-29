@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # [설정] 페이지 기본
-st.set_page_config(page_title="도시가스 경제성 분석기 v2.6", layout="wide")
+st.set_page_config(page_title="도시가스 경제성 분석기 v2.7", layout="wide")
 
 def manual_npv(rate, values):
     return sum(v / ((1 + rate) ** i) for i, v in enumerate(values))
@@ -17,7 +17,7 @@ def manual_irr(values):
     try:
         import numpy_financial as npf
         res = npf.irr(values)
-        return res if not np.isnan(res) and res < 5 else None # 비현실적 고수익률 차단
+        return res if not np.isnan(res) and res < 5 else None
     except:
         return None
 
@@ -25,17 +25,27 @@ def manual_irr(values):
 def simulate_project(sim_len, sim_inv, sim_contrib, sim_other_subsidy, sim_vol, sim_rev, sim_cost, 
                      sim_jeon, rate, tax, period, c_maint, c_adm_jeon, c_adm_m):
     
+    # 0년차 초기 투자비
     net_inv = sim_inv - sim_contrib - sim_other_subsidy
+    
+    # 수익 및 비용 계산
     margin = sim_rev - sim_cost
     cost_sga = (sim_len * c_maint) + (sim_len * c_adm_m) + (sim_jeon * c_adm_jeon)
     depreciation = sim_inv / period 
     
+    # 세전 영업이익 (EBIT)
     ebit = margin - cost_sga - depreciation
-    # 엑셀 기준: 적자 시 세금 절감 효과 반영(Tax Shield)
+    
+    # 세금 환급 효과 반영 (Tax Shield)
     net_income = ebit * (1 - tax) 
+    
+    # 세후 수요개발 기대이익 (OCF = 세후당기손익 + 감가상각비)
     ocf = net_income + depreciation
     
+    # 전체 현금흐름 배열
     flows = [-net_inv] + [ocf] * int(period)
+    
+    # 지표 산출
     npv = manual_npv(rate, flows)
     irr = manual_irr(flows)
     
@@ -43,10 +53,11 @@ def simulate_project(sim_len, sim_inv, sim_contrib, sim_other_subsidy, sim_vol, 
 
     return {
         "npv": npv, "irr": irr, "irr_reason": irr_reason, "net_inv": net_inv, 
-        "ocf": ocf, "ebit": ebit, "net_income": net_income, "flows": flows
+        "ocf": ocf, "ebit": ebit, "net_income": net_income, "sga": cost_sga, 
+        "dep": depreciation, "flows": flows, "margin": margin
     }
 
-# [UI] 상단 타이틀
+# [UI] 타이틀 및 입력부
 st.title("🏗️ 신규배관 경제성 분석 Simulation")
 
 with st.sidebar:
@@ -79,49 +90,47 @@ if st.button("🚀 경제성 분석 실행", type="primary"):
     
     st.divider()
     
-    # 결과 지표 표시
+    # 결과 지표 상단 표시
     m1, m2, m3 = st.columns(3)
-    
-    # 1. NPV 표시 및 설명
     with m1:
         st.metric("순현재가치 (NPV)", f"{res['npv']:,.0f} 원")
-        st.caption("**[의미]** 투자로 인해 발생하는 모든 현금흐름을 현재 가치로 합산한 값입니다.")
-        if res['npv'] < 0:
-            st.error("⚠️ 투자 부적격 (손실 예상)")
-        else:
-            st.success("✅ 투자 적격 (수익 예상)")
+        if res['npv'] < 0: st.error("⚠️ 투자 부적격 (손실 예상)")
+        else: st.success("✅ 투자 적격 (수익 예상)")
+        st.caption("[의미] 모든 현금흐름을 현재 가치로 합산한 값입니다.")
 
-    # 2. IRR 표시 및 설명
     with m2:
         if res['irr'] is None:
             st.metric("내부수익률 (IRR)", "계산 불가")
-            st.caption(f"**[알림]** {res['irr_reason']}")
+            st.caption(f"[알림] {res['irr_reason']}")
         else:
             st.metric("내부수익률 (IRR)", f"{res['irr']*100:.2f} %")
-        st.caption("**[의미]** 투자 비용 대비 매년 기대되는 수익률입니다. 할인율보다 높아야 투자가치가 있습니다.")
+        st.caption("[의미] 투자 비용 대비 매년 기대되는 수익률입니다.")
 
-    # 3. DPP 표시 및 설명
     with m3:
         st.metric("할인회수기간 (DPP)", "회수 불가")
-        st.caption("**[의미]** 투자 원금을 회수하는 데 걸리는 시간입니다. 현재 수익성으로는 원금 회수가 어렵습니다.")
+        st.caption("[의미] 투자 원금을 회수하는 데 걸리는 시간입니다.")
 
     st.divider()
 
-    # NPV 산출 사유 요약 (요청하신 부분)
+    # NPV 산출 사유 분석 (에러 수정 및 문구 추가)
     st.subheader("🧐 NPV 산출 사유 분석")
     st.markdown(f"""
     현재 NPV가 **{res['npv']:,.0f}원**으로 산출된 주요 원인은 다음과 같습니다:
     
-    1. **운영 수익성 결여**: 연간 매출 마진({(sim_rev-sim_cost):,.0f}원)보다 판관비와 관리비의 합({res['sga']:,.0f}원)이 더 커서 매년 영업 적자가 발생합니다.
-    2. **감가상각 부담**: 70억 원의 대규모 공사비가 매년 약 {res['dep']/100000000:,.1f}억 원의 감가상각 비용으로 반영되어 장부상 손실을 키우고 있습니다.
-    3. **현금유출 지속**: 보조금으로 초기 자본 투입은 방어했으나, 매년 발생하는 세후 현금흐름(OCF)이 **{res['ocf']:,.0f}원**으로 마이너스입니다.
-    4. **미래 손실의 누적**: 30년 동안 반복되는 연간 손실액을 현재 가치로 할인하여 합산한 결과, 초기 보조금 혜택을 상회하는 큰 규모의 마이너스 NPV가 도출되었습니다.
+    1. **운영 수익성 결여**: 연간 매출 마진({res['margin']:,.0f}원)보다 판관비 합계({res['sga']:,.0f}원)가 더 커서 본원적인 영업 적자 상태입니다.
+    2. **감가상각 부담**: 총 공사비 70억 원에 대해 매년 **{res['dep']:,.0f}원**의 감가상각비가 발생하여 비용 부담을 가중시키고 있습니다.
+    3. **현금흐름 적자 지속**: 세금 절감 효과와 감가상각비 환입을 고려하더라도, 매년 **{res['ocf']:,.0f}원**의 **세후 수요개발 기대이익(적자)**이 발생하고 있습니다.
+    4. **미래 가치 누적**: 매년 발생하는 약 {abs(res['ocf'])/1000000:,.1f}백만 원의 손실이 {PERIOD}년 동안 누적 및 할인되어 최종 NPV에 반영되었습니다.
     """)
 
-    # 세부 계산 수치
+    # 세부 수치 요약
     st.subheader("🔎 세부 계산 근거")
     col_a, col_b = st.columns(2)
     with col_a:
-        st.info(f"**초기 순투자액(Year 0): {res['net_inv']:,.0f} 원**\n\n*실제 투입되는 초기 자본입니다. 보조금이 공사비보다 많을 경우 마이너스로 표시됩니다.*")
+        st.info(f"**초기 순투자액(Year 0): {res['net_inv']:,.0f} 원**\n\n(공사비 - 분담금 - 보조금)")
     with col_b:
-        st.info(f"**세후 수요개발 기대이익(OCF): {res['ocf']:,.0f} 원**\n\n*매년 실제로 발생하는 현금 흐름입니다. 이 수치가 NPV를 결정하는 핵심 요인입니다.*")
+        st.info(f"**세후 수요개발 기대이익(OCF): {res['ocf']:,.0f} 원**\n\n(연간 실제 현금 흐름)")
+
+    # 차트
+    cf_df = pd.DataFrame({"Year": range(PERIOD+1), "Cumulative": np.cumsum(res['flows'])})
+    st.line_chart(cf_df.set_index("Year"))
