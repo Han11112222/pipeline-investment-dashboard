@@ -16,7 +16,6 @@ DEFAULT_FILE_NAME = "리스트_20260129.xlsx"
 # [함수] 데이터 전처리 & 파싱 (공통)
 # --------------------------------------------------------------------------
 def clean_column_names(df):
-    """컬럼명 정규화"""
     df.columns = [str(c).replace("\n", "").replace(" ", "").replace("\t", "").strip() for c in df.columns]
     return df
 
@@ -40,7 +39,7 @@ def parse_value(value):
         return 0.0
 
 # --------------------------------------------------------------------------
-# [함수] 1. 기존 분석 로직 (관리용 - 기존 코드 유지)
+# [함수] 1. 기존 분석 로직 (관리용)
 # --------------------------------------------------------------------------
 def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admin_hh, cost_admin_m, margin_override=None):
     if target_irr == 0:
@@ -83,7 +82,9 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
             else:
                 required_capital_recovery = net_investment / pvifa
 
-            # 기존 데이터 분석 로직 (기존 엑셀 데이터와의 호환성 유지)
+            # 기존 데이터 분석 로직 (기존 엑셀 데이터 기준)
+            # 여기서는 기존 데이터와의 정합성을 위해 조건부 로직 유지
+            # (대구교도소 같은 신규 특수건은 시뮬레이션 탭에서 처리)
             maint_cost = length * cost_maint_m
             
             if any(k in str(usage_str) for k in ['공동', '단독', '주택', '아파트']):
@@ -127,7 +128,7 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
     return df, results, None
 
 # --------------------------------------------------------------------------
-# [함수] 2. 신규 시뮬레이션 로직 (형님 요청: 3가지 비용 무조건 합산)
+# [함수] 2. 신규 시뮬레이션 로직 (무조건 3중 합산)
 # --------------------------------------------------------------------------
 
 def calculate_internal_irr(cash_flows, guess=0.1):
@@ -148,14 +149,19 @@ def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost,
     profit = rev - cost  # 마진
     net_inv = inv_amt - contrib # 순투자액
     
-    # 2. 판관비 계산 (여기가 핵심!)
-    # 무조건 3가지를 다 더합니다. (조건문 삭제)
+    # 2. 판관비 계산 (형님 요청: 3가지 비용 무조건 합산)
     
-    cost_1 = inv_len * cost_maint        # 배관 유지비 (m당)
-    cost_2 = inv_len * cost_admin_m      # 일반 관리비 (m당)
-    cost_3 = num_jeon * cost_admin_jeon  # 일반 관리비 (전당)
+    # (1) 배관 유지비 (m당)
+    cost_1 = inv_len * cost_maint        
     
-    total_sga = cost_1 + cost_2 + cost_3 # 무조건 합산
+    # (2) 일반 관리비 (m당)
+    cost_2 = inv_len * cost_admin_m      
+    
+    # (3) 일반 관리비 (전당)
+    cost_3 = num_jeon * cost_admin_jeon  
+    
+    # 총 판관비 합계 (1+2+3)
+    total_sga = cost_1 + cost_2 + cost_3
     
     # 3. 감가상각 & OCF
     dep = inv_amt / period
@@ -492,11 +498,11 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
 
     st.title("🏗️ 신규배관 경제성 분석 Simulation")
     st.markdown("💡 **신규 투자 건에 대해 NPV, IRR, 회수기간을 시뮬레이션합니다.**")
-    st.info("※ 본 시뮬레이션은 형님의 요청대로 **3가지 판관비(배관유지비+일반m당+일반전당)를 무조건 합산**하여 계산합니다.")
+    st.warning("🚨 **[필독]** 판관비는 **[배관유지비(m) + 일반m당 + 일반전당]** 3가지를 **무조건 합산**합니다.")
     
     st.divider()
     
-    # 입력 폼
+    # 입력 폼 (2단 레이아웃)
     col1, col2 = st.columns(2)
     
     with col1:
@@ -507,6 +513,10 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         
         st.markdown("---")
         st.subheader("2. 시설 특성")
+        
+        # [수정] 라디오 버튼 삭제! 그냥 안내 문구만 표시
+        st.info("ℹ️ 용도 구분 없이 **모든 관리비 항목이 합산** 적용됩니다.")
+            
         sim_jeon = st.number_input("공급 전수 (전)", value=2, step=1)
         st.caption("※ '전'은 계량기 개수입니다.")
 
@@ -521,6 +531,7 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
     
     if st.button("🚀 경제성 분석 실행 (Run Analysis)", type="primary"):
         # 계산
+        # 여기서 사이드바의 변수명(sim_cost_admin_jeon 등)을 정확히 전달합니다.
         res = simulate_project(
             sim_len, sim_inv, sim_contrib, sim_other, sim_vol, sim_rev, sim_cost,
             sim_jeon, sim_discount_rate/100, sim_tax_rate/100, sim_period,
@@ -544,9 +555,9 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         m3.metric("3. 할인회수기간 (DPP)", dpp_display,
                   delta="원금 회수 시점", delta_color="off")
         
-        # 상세 데이터
+        # 상세 데이터 (비용 구조 명확화)
         st.error(f"""
-        **[비용 합산 상세 (3가지 모두 포함)]**
+        **[비용 합산 상세 (3가지 무조건 합산)]**
         * **1) 배관 유지비 (m당):** {res['c1']:,.0f} 원 ({sim_len:,.0f}m × {sim_cost_maint:,.0f}원)
         * **2) 일반관리비 (m당):** {res['c2']:,.0f} 원 ({sim_len:,.0f}m × {sim_cost_admin_m:,.0f}원)
         * **3) 일반관리비 (전당):** {res['c3']:,.0f} 원 ({sim_jeon}전 × {sim_cost_admin_jeon:,.0f}원)
