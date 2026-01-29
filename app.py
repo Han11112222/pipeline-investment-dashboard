@@ -82,14 +82,11 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
             else:
                 required_capital_recovery = net_investment / pvifa
 
-            # 기존 데이터 분석 로직 (정합성 유지)
             maint_cost = length * cost_maint_m
-            
             if any(k in str(usage_str) for k in ['공동', '단독', '주택', '아파트']):
                 admin_cost = households * cost_admin_hh
             else:
                 admin_cost = length * cost_admin_m
-            
             total_sga = maint_cost + admin_cost
             
             depreciation = investment / period
@@ -126,7 +123,7 @@ def calculate_all_rows(df, target_irr, tax_rate, period, cost_maint_m, cost_admi
     return df, results, None
 
 # --------------------------------------------------------------------------
-# [함수] 2. 신규 시뮬레이션 로직 (무조건 3중 비용 합산)
+# [함수] 2. 신규 시뮬레이션 로직 (형님 맞춤형 - 3중 비용 무조건 합산)
 # --------------------------------------------------------------------------
 
 def calculate_internal_irr(cash_flows, guess=0.1):
@@ -144,25 +141,29 @@ def simulate_project(inv_len, inv_amt, contrib, other_profit, vol, rev, cost,
                      cost_maint, cost_admin_jeon, cost_admin_m):
     
     # 1. 기초 데이터
-    profit = rev - cost  # 마진
+    profit = rev - cost  # 매출 - 원가 = 마진
     net_inv = inv_amt - contrib # 순투자액
     
-    # 2. 판관비 계산 (3가지 무조건 합산)
-    # 엑셀과 1원 단위까지 맞추기 위해 정수형 변환 고려
-    
+    # 2. 판관비 계산 (형님 요청: 3가지 비용 무조건 합산)
     cost_1 = inv_len * cost_maint        # 배관 유지비 (m당)
-    cost_2 = inv_len * cost_admin_m      # 일반 관리비 (m당) -> 여기가 9,500만원!
-    cost_3 = num_jeon * cost_admin_jeon  # 일반 관리비 (전당) -> 여기가 1.2만원
+    cost_2 = inv_len * cost_admin_m      # 일반 관리비 (m당)
+    cost_3 = num_jeon * cost_admin_jeon  # 일반 관리비 (전당)
     
-    total_sga = cost_1 + cost_2 + cost_3 # 합계: 약 1.5억
+    total_sga = cost_1 + cost_2 + cost_3
     
-    # 3. 감가상각 & OCF
+    # 3. 감가상각 & OCF (영업현금흐름)
     dep = inv_amt / period
+    
+    # [핵심] 영업이익(EBIT) 계산
     ebit = (profit + other_profit) - total_sga - dep
+    
+    # [핵심] 세후영업이익(NOPAT)
     nopat = ebit * (1 - tax_rate)
+    
+    # [핵심] 영업현금흐름(OCF) = 세후영업이익 + 감가상각비
     ocf = nopat + dep
     
-    # 4. 현금흐름 배열
+    # 4. 현금흐름 배열 (0년차: 투자, 1~30년차: 회수)
     cash_flows = [-net_inv] + [ocf] * int(period)
     
     # 5. 지표 계산
@@ -484,12 +485,13 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         sim_cost_maint = st.number_input("배관 유지비 (원/m)", value=8222)
         
         st.markdown("**일반관리비 단가 (두 가지)**")
+        # [변수명 중요] 여기서 정의한 변수를 아래 함수 호출 시 그대로 써야 함
         sim_cost_admin_jeon = st.number_input("일반관리비 (원/전)", value=6209)
         sim_cost_admin_m = st.number_input("일반관리비 (원/m)", value=13605)
 
     st.title("🏗️ 신규배관 경제성 분석 Simulation")
     st.markdown("💡 **신규 투자 건에 대해 NPV, IRR, 회수기간을 시뮬레이션합니다.**")
-    st.info("※ [대구교도소 분석 기준] **배관유지비(m) + 일반관리비(m) + 일반관리비(전) 3가지를 모두 합산**하여 비용을 산정합니다.")
+    st.warning("🚨 **[필독]** 판관비는 **[배관유지비(m) + 일반m당 + 일반전당]** 3가지를 **무조건 합산**합니다.")
     
     st.divider()
     
@@ -497,18 +499,21 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("1. 투자 정보 (기본값: 대구교도소)")
+        st.subheader("1. 투자 정보")
+        # [대구교도소 데이터 기본값 세팅]
         sim_len = st.number_input("투자 길이 (m)", value=7000.0, step=10.0, format="%.1f")
         sim_inv = st.number_input("투자 금액 (원)", value=7000000000, step=1000000)
         sim_contrib = st.number_input("시설 분담금 (계, 원)", value=7000000000, step=500000)
         
         st.markdown("---")
         st.subheader("2. 시설 특성")
+        st.info("ℹ️ 용도 구분 없이 **모든 관리비 항목이 합산** 적용됩니다.")
         sim_jeon = st.number_input("공급 전수 (전)", value=2, step=1)
         st.caption("※ '전'은 계량기 개수입니다.")
 
     with col2:
-        st.subheader("3. 수익 정보 (기본값: 대구교도소)")
+        st.subheader("3. 수익 정보")
+        # [대구교도소 데이터 기본값 세팅]
         sim_vol = st.number_input("연간 판매량 (MJ)", value=13250280.0, step=10000.0)
         sim_rev = st.number_input("연간 판매액 (매출, 원)", value=305103037, step=100000)
         sim_cost = st.number_input("연간 판매원가 (매입비, 원)", value=256160477, step=100000)
@@ -542,8 +547,8 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
         m3.metric("3. 할인회수기간 (DPP)", dpp_display,
                   delta="원금 회수 시점", delta_color="off")
         
-        # 상세 데이터 검증표 (형님이 숫자 확인할 수 있도록)
-        st.warning(f"""
+        # 상세 데이터 검증표 (비용 vs 수익 비교)
+        st.error(f"""
         **[💰 비용 vs 수익 검산표]**
         
         **1. 연간 버는 돈 (마진)** : **{res['margin']:,.0f} 원** (판매액 - 원가)
@@ -554,7 +559,7 @@ elif page_mode == "신규배관 경제성 분석 Simulation":
           - 일반 관리비 (전당) : {res['c3']:,.0f} 원
           - **합계 (판관비)** : **{res['sga']:,.0f} 원**
         
-        **3. 결론 (영업이익)** : **{res['margin'] - res['sga']:,.0f} 원** (적자 🚨)
+        **3. 결론 (영업이익)** : **{res['ebit']:,.0f} 원** (적자 🚨)
         """)
         
         # 차트
